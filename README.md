@@ -122,7 +122,7 @@ python3 test_setup.py --no-local
 
 #### Local LLM Inference
 ```bash
-# Run with local Llama 2 model (default)
+# Run with local Phi-3.5-mini-instruct model (default)
 python3 src/rag_poisoning_demo.py
 ```
 
@@ -181,7 +181,7 @@ The complete research paper is contained in `research_paper/index.qmd` and organ
 - Python 3.11+
 - uv Virtual environment support
 - ~2GB disk space (for models and dependencies)
-- **Additional for local LLM:** ~4GB additional space for Llama 2 model
+- **Additional for local LLM:** ~4GB additional space for Phi-3.5-mini-instruct model
 
 ### For Remote Inference
 - **Ollama:** Ollama server (local or remote) with URL and model configured in `.env`

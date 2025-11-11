@@ -15,7 +15,7 @@ transformers>=4.36.0
 huggingface-hub>=0.20.0
 
 # Local LLM Support
-llama-cpp-python==0.2.32
+llama-cpp-python>=0.3.2
 
 # Configuration
 python-dotenv==1.0.0
