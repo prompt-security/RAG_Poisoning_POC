@@ -91,7 +91,7 @@ ragpoc/
 
 ## Quick Start
 
-### For Local LLM Inference (Full Setup)
+### For Local LLM Inference (Full Setup + LlamaCpp Inference)
 ```bash
 # Make setup script executable and run
 chmod +x setup.sh
@@ -156,7 +156,7 @@ python3 src/rag_poisoning_demo.py --infer darwin  # Force Apple Silicon (MPS)
 
 ## Key Research Contributions
 
-1. **Novel Attack Vector**: First demonstration of prompt injection via vector database embeddings
+1. **Attack Vector**: First demonstration of prompt injection via vector database embeddings
 2. **Practical Implementation**: Working proof-of-concept using LangChain and Chroma
 3. **Security Analysis**: Comprehensive threat model and mitigation strategies
 4. **Reproducible Results**: Complete experimental setup and code availability
