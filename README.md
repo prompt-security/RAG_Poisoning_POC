@@ -64,7 +64,7 @@ flowchart TD
 - **Embedding Model**: `sentence-transformers/all-MiniLM-L6-v2` (384-dimensional vectors)
 - **Vector Database**: ChromaDB with SQLite backend, similarity search (top-k=3)
 - **Orchestration**: LangChain RetrievalQA chain with "stuff" chain type
-- **Environment**: Python 3.8+ with uv package manager
+- **Environment**: Python 3.11+ with uv package manager
 ## Files Structure
 
 ```

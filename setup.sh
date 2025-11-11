@@ -34,19 +34,15 @@ else
     echo "📄 No environment file found, will create defaults..."
 fi
 
-# Check Python version (compatible with both Linux and macOS)
-python_version=$(python3 --version 2>&1 | cut -d' ' -f2)
-echo "🐍 Python version: $python_version"
-
-# Extract major and minor version numbers
-major_version=$(echo "$python_version" | cut -d'.' -f1)
-minor_version=$(echo "$python_version" | cut -d'.' -f2)
-
-# Check if Python version is 3.8 or higher
-if [ "$major_version" -lt 3 ] || ([ "$major_version" -eq 3 ] && [ "$minor_version" -lt 8 ]); then
-    echo "❌ Python 3.8 or higher is required"
+# Check if uv is installed
+if ! command -v uv >/dev/null 2>&1; then
+    echo "❌ uv is not installed. Please install it first:"
+    echo "   curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo "   or visit: https://docs.astral.sh/uv/getting-started/installation/"
     exit 1
 fi
+
+echo "✅ uv is installed"
 
 # Create virtual environment
 echo "📦 Creating virtual environment..."
