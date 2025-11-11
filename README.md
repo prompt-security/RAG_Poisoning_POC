@@ -29,7 +29,7 @@ flowchart TD
     A[Application Layer<br/>rag_poisoning_demo.py] --> B[Orchestration<br/>LangChain v0.1.0]
     
     %% Core Components
-    B --> C[Language Model<br/>Llama 2 7B Chat]
+    B --> C[Language Model<br/> Phi-3.5-mini-instruct]
     B --> D[Embedding Model<br/>all-MiniLM-L6-v2]
     B --> E[Vector Database<br/>ChromaDB v0.4.24]
     
@@ -60,7 +60,7 @@ flowchart TD
 
 ### Component Details
 
-- **Language Model**: Llama 2 7B Chat (Q4_K_M quantization, 4096 token context)
+- **Language Model**: Phi-3.5-mini-instruct (Q4_K_M quantization, 4096 token context)
 - **Embedding Model**: `sentence-transformers/all-MiniLM-L6-v2` (384-dimensional vectors)
 - **Vector Database**: ChromaDB with SQLite backend, similarity search (top-k=3)
 - **Orchestration**: LangChain RetrievalQA chain with "stuff" chain type
