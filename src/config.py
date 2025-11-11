@@ -71,7 +71,7 @@ class Config:
     
     @property
     def llama_model_path(self):
-        return os.getenv('LLAMA_MODEL_PATH', "./models/llm/llama-2-7b-chat.Q4_K_M.gguf")
+        return os.getenv('LLAMA_MODEL_PATH', "./models/llm/Phi-3.5-mini-instruct.Q4_K_M.gguf")
     
     @property
     def embedding_model(self):

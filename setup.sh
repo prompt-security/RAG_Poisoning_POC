@@ -60,7 +60,7 @@ uv pip install -r requirements.txt
 VECTOR_DB_PATH=${VECTOR_DB_PATH:-"./data/chroma_db"}
 SENTENCE_TRANSFORMERS_HOME=${SENTENCE_TRANSFORMERS_HOME:-"./models/embedding"}
 TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-"./models/embedding"}
-LLAMA_MODEL_PATH=${LLAMA_MODEL_PATH:-"./models/llm/llama-2-7b-chat.Q4_K_M.gguf"}
+LLAMA_MODEL_PATH=${LLAMA_MODEL_PATH:-"./models/llm/Phi-3.5-mini-instruct.Q4_K_M.gguf"}
 LOG_FILE=${LOG_FILE:-"./logs/rag_demo.log"}
 
 # Create necessary directories
@@ -118,8 +118,12 @@ else:
 if [ "$NO_LOCAL" = false ]; then
     echo "🤖 Downloading local LLM for inference..."
     if [ ! -f "$LLAMA_MODEL_PATH" ]; then
-        echo "Downloading Llama-2-7B-Chat (Q4_K_M quantized, ~4GB) to $LLAMA_MODEL_PATH..."
-        LLAMA_DOWNLOAD_URL="https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q4_K_M.gguf"
+        echo "Downloading Phi-3.5-mini-instruct (Q4_K_M quantized) to $LLAMA_MODEL_PATH..."
+        # Note: Phi-3.5-mini-instruct is a full model, not GGUF quantized
+        # You may want to use a GGUF version for llama-cpp-python compatibility
+        # For now, pointing to the model repository - you'll need to convert to GGUF or use a different inference method
+        LLAMA_DOWNLOAD_URL="https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+
         if command -v wget >/dev/null 2>&1; then
             wget -O "$LLAMA_MODEL_PATH" "$LLAMA_DOWNLOAD_URL"
         elif command -v curl >/dev/null 2>&1; then
