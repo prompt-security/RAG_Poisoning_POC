@@ -1,0 +1,9 @@
+# API Keys for RAG Poisoning Demo
+# Store your API keys securely here
+
+# DeepSeek API Key
+DEEPSEEK_API_KEY=""
+
+# Any other API keys can be added here
+# OPENAI_API_KEY=""
+# ANTHROPIC_API_KEY=""

@@ -1,0 +1,5 @@
+models/
+logs/
+.keys
+.env
+data/
