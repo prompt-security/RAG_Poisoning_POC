@@ -9,13 +9,14 @@ The Hidden Parrot: RAG Poisoning POC  <img src="resources/prompt-icon.svg" alt="
 <h4> Brought to you by Prompt Security, the Complete Platform for GenAI Security
 
 </div>
-
+[Read the full technical deep dive](https://prompt.security/blog/the-embedded-threat-in-your-llm-poisoning-rag-pipelines-via-vector-embeddings)
 
 <div align="center">
   
 ![Prompt Security Logo](./resources/Black+Color.png)
 
 </div>
+
 
 
 ## Abstract
