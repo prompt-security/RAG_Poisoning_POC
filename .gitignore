@@ -2,6 +2,8 @@ models/
 logs/
 .keys
 .env
+.env.bak
+.env.*.bak
 data/
 __pycache__/
 *.pyc

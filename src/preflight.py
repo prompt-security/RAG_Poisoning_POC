@@ -23,9 +23,11 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -46,6 +48,28 @@ MIN_PARAMS_B = 2.0      # <=1.5B instruct models comply only 40-60% of the time
 
 OK, WARN, FAIL, INFO = "OK", "WARN", "FAIL", "INFO"
 
+# The demo reads OPENAI_COMPAT_BASE_URL (see config.py). These are only the
+# conventional listen ports, used to discover an engine that is already up when
+# .env has not been pointed at one yet.
+DEFAULT_PORTS = {"llama-server": 8080, "lmstudio": 1234}
+
+
+def compat_base(env: Dict[str, str], engine: str) -> str:
+    """
+    Resolve the base URL to probe for an OpenAI-compatible engine.
+
+    Prefers OPENAI_COMPAT_BASE_URL -- the variable the demo actually reads -- but
+    only when it points at this engine's port, so a survey run still discovers an
+    engine on its conventional port instead of probing the other one twice.
+    """
+    port = DEFAULT_PORTS[engine]
+    configured = (env.get("OPENAI_COMPAT_BASE_URL") or "").strip().rstrip("/")
+    if configured:
+        tail = configured.rsplit(":", 1)[-1]
+        if tail.isdigit() and int(tail) == port:
+            return configured
+    return "http://localhost:%d" % port
+
 
 @dataclass
 class ModelSpec:
@@ -57,6 +81,9 @@ class ModelSpec:
     params_b: float
     licence: str
     ollama_tag: str
+    sha256: str
+    revision: str
+    key: str = ""
 
 
 # Ungated on purpose: no HF token, no gated-repo TOS acceptance, MIT licence,
@@ -71,6 +98,9 @@ UNGATED_MODELS: Dict[str, ModelSpec] = {
         params_b=3.8,
         licence="MIT",
         ollama_tag="phi3.5",
+        sha256="e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
+        revision="6d70da17e749a471ccb62ade694486011a75cda3",
+        key="phi-3.5-mini",
     ),
     "phi-4-mini": ModelSpec(
         label="Phi-4-mini-instruct (Microsoft)",
@@ -81,6 +111,9 @@ UNGATED_MODELS: Dict[str, ModelSpec] = {
         params_b=3.8,
         licence="MIT",
         ollama_tag="phi4-mini",
+        sha256="01999f17c39cc3074afae5e9c539bc82d45f2dd7faa3917c66cbef76fce8c0c2",
+        revision="7ff82c2aaa4dde30121698a973765f39be5288c0",
+        key="phi-4-mini",
     ),
 }
 
@@ -195,14 +228,23 @@ def install_fix(engine: str) -> List[str]:
     return INSTALL_COMMANDS.get(engine, {}).get(platform.system(), [])
 
 
+# Model names are delimited by -, :, _, / and whitespace. Dots are kept INSIDE
+# tokens so "1.5b" and "llama3.2" survive splitting.
+_NAME_TOKENS = re.compile(r"[^a-z0-9.]+")
+
+
 def assess_model_name(name: str) -> Optional[str]:
-    """Return a warning string if this model is known to break the demo."""
-    low = name.lower()
+    """
+    Return a warning string if this model is known to break the demo.
+
+    Matches whole tokens, not substrings. A previous version also tried an empty
+    separator, which collapsed the test to `hint in name` and flagged real models
+    such as llama3.2:11b as "too small" because "11b" contains "1b".
+    """
+    tokens = set(t for t in _NAME_TOKENS.split(name.lower()) if t)
     for hint, why in BAD_MODEL_HINTS.items():
-        # match on token boundaries so "31b" doesn't trip the "1b" rule
-        for sep in ("-", ":", "_", ".", " ", ""):
-            if (sep + hint) in low or low.startswith(hint):
-                return "%r looks like it is %s" % (name, why)
+        if hint in tokens:
+            return "%r looks like it is %s" % (name, why)
     return None
 
 
@@ -225,7 +267,7 @@ def check_python() -> Result:
     return Result(OK, "Python %s" % ver)
 
 
-def check_pydeps() -> List[Result]:
+def check_pydeps(local_required: bool = False) -> List[Result]:
     """Import-check the project dependencies without importing them for real."""
     import importlib.util
     wanted = [
@@ -250,10 +292,13 @@ def check_pydeps() -> List[Result]:
         results.append(Result(OK, "Project dependencies",
                               "langchain, chromadb, sentence-transformers present"))
 
-    # llama-cpp-python is only needed for the in-process local path.
+    # llama-cpp-python is only needed for the in-process local path -- but if
+    # that IS the selected path, its absence is fatal, not advisory.
     if importlib.util.find_spec("llama_cpp") is None:
         results.append(Result(
-            WARN, "llama-cpp-python",
+            FAIL if local_required else WARN, "llama-cpp-python",
+            "Required for the selected in-process GGUF path (--infer cpu/darwin)."
+            if local_required else
             "Absent, so --infer cpu/darwin cannot run. Only needed for the "
             "in-process GGUF path; endpoint providers do not use it.",
             ["uv pip install llama-cpp-python"]))
@@ -271,9 +316,10 @@ def check_embedding_cache(env: Dict[str, str]) -> Result:
     if folder and os.path.isdir(path) and os.listdir(path):
         return Result(OK, "Embedding model cached", model)
     return Result(
-        WARN, "Embedding model not cached", 
-        "%s is not in %s. config.py forces TRANSFORMERS_OFFLINE=1, so a cold "
-        "cache raises a misleading offline error even with working internet." % (model, home),
+        FAIL, "Embedding model not cached",
+        "%s is not in %s. config.py forces TRANSFORMERS_OFFLINE=1 and the demo "
+        "builds embeddings before it ever reaches the LLM, so this fails the run "
+        "outright -- with a misleading offline error even on working internet." % (model, home),
         ["./setup.sh --no-local  # pre-downloads the embedding model"])
 
 
@@ -292,25 +338,46 @@ def embedding_dim(env: Dict[str, str]) -> Optional[int]:
     return None
 
 
+def model_for_path(path: str) -> Optional[ModelSpec]:
+    """Which known model does this LLAMA_MODEL_PATH refer to, if any?"""
+    base = os.path.basename(path)
+    for spec in UNGATED_MODELS.values():
+        if spec.filename == base:
+            return spec
+    return None
+
+
+def _download_fix(path: str) -> List[str]:
+    """
+    Remediation for a missing GGUF.
+
+    Downloading a model whose filename does not match LLAMA_MODEL_PATH would
+    leave this check failing, so name the matching model where we can and
+    otherwise repoint .env as well.
+    """
+    spec = model_for_path(path)
+    if spec is not None:
+        return ["python3 src/preflight.py --download %s" % spec.key]
+    return ["python3 src/preflight.py --download phi-4-mini",
+            "python3 src/preflight.py --write-env local --model phi-4-mini"]
+
+
 def check_gguf(env: Dict[str, str]) -> Result:
     path = env.get("LLAMA_MODEL_PATH", "./models/llm/Phi-3.5-mini-instruct.Q4_K_M.gguf")
     if not os.path.exists(path):
-        return Result(FAIL, "Local GGUF missing", path,
-                      ["python3 src/preflight.py --download phi-4-mini"])
+        return Result(FAIL, "Local GGUF missing", path, _download_fix(path))
     size_gb = os.path.getsize(path) / (1024 ** 3)
     if size_gb < 0.5:
         return Result(FAIL, "Local GGUF looks truncated",
                       "%s is only %.2f GB -- a failed or partial download." % (path, size_gb),
-                      ["rm %s" % path,
-                       "python3 src/preflight.py --download phi-4-mini"])
+                      ["rm %s" % path] + _download_fix(path))
     with open(path, "rb") as fh:
         magic = fh.read(4)
     if magic != b"GGUF":
         return Result(FAIL, "Local model is not a GGUF file",
                       "%s does not start with the GGUF magic bytes. The demo needs a "
                       "GGUF quantisation, not the raw HF weights." % path,
-                      ["rm %s" % path,
-                       "python3 src/preflight.py --download phi-4-mini"])
+                      ["rm %s" % path] + _download_fix(path))
     return Result(OK, "Local GGUF", "%s (%.2f GB)" % (path, size_gb))
 
 
@@ -318,13 +385,17 @@ def check_gguf(env: Dict[str, str]) -> Result:
 # Endpoint checks
 # --------------------------------------------------------------------------
 
-def check_ollama(env: Dict[str, str], deep: bool) -> List[Result]:
+def check_ollama(env: Dict[str, str], deep: bool,
+                 explicit: bool = False) -> List[Result]:
     results: List[Result] = []
     base = env.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-    model = env.get("OLLAMA_MODEL", "")
+    # Mirror config.py's default, or preflight would pass while the demo pulls a
+    # model nobody checked.
+    configured = (env.get("OLLAMA_MODEL") or "").strip()
+    model = configured or "phi4-mini"
 
     if shutil.which("ollama") is None:
-        results.append(Result(FAIL, "ollama not installed", "",
+        results.append(Result(FAIL if explicit else INFO, "ollama not installed", "",
                               install_fix("ollama")))
         return results
     results.append(Result(OK, "ollama installed", shutil.which("ollama")))
@@ -332,7 +403,7 @@ def check_ollama(env: Dict[str, str], deep: bool) -> List[Result]:
     status, body, err = http_json(base + "/api/tags", timeout=4.0)
     if status is None:
         results.append(Result(
-            FAIL, "ollama daemon not reachable",
+            FAIL if explicit else INFO, "ollama daemon not reachable",
             "%s -- %s" % (base, err),
             ["ollama serve  # leave this running in another terminal"]))
         return results
@@ -341,15 +412,31 @@ def check_ollama(env: Dict[str, str], deep: bool) -> List[Result]:
     results.append(Result(OK, "ollama daemon up",
                           "%d model(s) pulled" % len(tags)))
 
-    if not model:
-        results.append(Result(WARN, "OLLAMA_MODEL not set in .env", "",
-                              ["python3 src/preflight.py --write-env ollama --model phi-4-mini"]))
-    elif not any(t == model or t.startswith(model + ":") for t in tags):
+    if not configured:
         results.append(Result(
-            FAIL, "OLLAMA_MODEL not pulled",
-            "%r is not in: %s" % (model, ", ".join(tags) or "(none)"),
-            ["ollama pull %s" % model]))
+            INFO, "OLLAMA_MODEL not set in .env",
+            "config.py falls back to %r, so that is what the demo would use "
+            "and what is checked below." % model,
+            ["python3 src/preflight.py --write-env ollama --model phi-4-mini"]))
+
+    if not any(t == model or t.startswith(model + ":") for t in tags):
+        # An HF repo name (uppercase, or a '/') is not a valid Ollama tag, so
+        # telling the user to pull it verbatim would just fail again.
+        looks_like_hf_repo = "/" in model or model != model.lower()
+        if looks_like_hf_repo:
+            fix = ["# %r is a HuggingFace repo name, not an Ollama tag" % model,
+                   "python3 src/preflight.py --write-env ollama --model phi-4-mini",
+                   "ollama pull phi4-mini"]
+            detail = ("%r cannot be pulled -- Ollama tags are lowercase library "
+                      "names. Pulled: %s" % (model, ", ".join(tags) or "(none)"))
+        else:
+            fix = ["ollama pull %s" % model]
+            detail = "%r is not in: %s" % (model, ", ".join(tags) or "(none)")
+        results.append(Result(FAIL if explicit else WARN,
+                              "OLLAMA_MODEL not pulled", detail, fix))
+        model_pulled = False
     else:
+        model_pulled = True
         results.append(Result(OK, "OLLAMA_MODEL pulled", model))
         bad = assess_model_name(model)
         if bad:
@@ -369,17 +456,20 @@ def check_ollama(env: Dict[str, str], deep: bool) -> List[Result]:
              "export OLLAMA_KEEP_ALIVE=60m",
              "# then restart: ollama serve"]))
 
-    if model:
-        results.extend(probe_chat(base + "/v1", model, deep))
+    # Probing a model that is not pulled would just surface a second, noisier
+    # copy of the same 404 we already reported above.
+    if model_pulled:
+        results.extend(probe_chat(base + "/v1", model, deep, explicit))
     return results
 
 
-def check_llama_server(env: Dict[str, str], deep: bool) -> List[Result]:
+def check_llama_server(env: Dict[str, str], deep: bool,
+                       explicit: bool = False) -> List[Result]:
     results: List[Result] = []
-    base = env.get("LLAMA_SERVER_BASE_URL", "http://localhost:8080").rstrip("/")
+    base = compat_base(env, "llama-server")
 
     if shutil.which("llama-server") is None:
-        results.append(Result(WARN, "llama-server not installed",
+        results.append(Result(FAIL if explicit else WARN, "llama-server not installed",
                               "The most forgiving option for a live room: it ignores "
                               "the model field and fails LOUDLY on context overflow.",
                               install_fix("llama-server")))
@@ -390,7 +480,8 @@ def check_llama_server(env: Dict[str, str], deep: bool) -> List[Result]:
     if status is None:
         spec = UNGATED_MODELS["phi-4-mini"]
         results.append(Result(
-            INFO, "llama-server not running", "%s -- %s" % (base, err),
+            FAIL if explicit else INFO, "llama-server not running",
+            "%s -- %s" % (base, err),
             ["llama-server -hf bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M \\",
              "    -c %d -np 1 -cb --host 127.0.0.1 --port 8080 -a local-model --jinja" % RECOMMENDED_CTX,
              "# -c is DIVIDED by -np, so -c must be >= %d * np" % MIN_CTX]))
@@ -420,22 +511,24 @@ def check_llama_server(env: Dict[str, str], deep: bool) -> List[Result]:
     served = "local-model"
     if isinstance(body, dict) and body.get("data"):
         served = body["data"][0].get("id", served)
-    results.extend(probe_chat(base + "/v1", served, deep))
+    results.extend(probe_chat(base + "/v1", served, deep, explicit))
     return results
 
 
-def check_lmstudio(env: Dict[str, str], deep: bool) -> List[Result]:
+def check_lmstudio(env: Dict[str, str], deep: bool,
+                   explicit: bool = False) -> List[Result]:
     results: List[Result] = []
-    base = env.get("LMSTUDIO_BASE_URL", "http://localhost:1234").rstrip("/")
+    base = compat_base(env, "lmstudio")
     if shutil.which("lms") is None:
-        results.append(Result(INFO, "LM Studio CLI not installed", "",
+        results.append(Result(FAIL if explicit else INFO,
+                              "LM Studio CLI not installed", "",
                               install_fix("lmstudio")))
     else:
         results.append(Result(OK, "LM Studio CLI installed", shutil.which("lms")))
 
     if not port_open("127.0.0.1", int(base.rsplit(":", 1)[-1])):
         results.append(Result(
-            INFO, "LM Studio server not running",
+            FAIL if explicit else INFO, "LM Studio server not running",
             "Its server is OFF by default and models JIT-load with a 25s+ stall.",
             ["lms server start --port 1234",
              "lms load phi-4-mini-instruct --context-length %d --parallel 1 --ttl 3600" % RECOMMENDED_CTX]))
@@ -447,11 +540,12 @@ def check_lmstudio(env: Dict[str, str], deep: bool) -> List[Result]:
     if isinstance(body, dict) and body.get("data"):
         served = body["data"][0].get("id")
     if served:
-        results.extend(probe_chat(base + "/v1", served, deep))
+        results.extend(probe_chat(base + "/v1", served, deep, explicit))
     return results
 
 
-def probe_chat(v1_base: str, model: str, deep: bool) -> List[Result]:
+def probe_chat(v1_base: str, model: str, deep: bool,
+               explicit: bool = True) -> List[Result]:
     """Round-trip a real completion, then optionally probe for silent truncation."""
     import time
     results: List[Result] = []
@@ -465,10 +559,12 @@ def probe_chat(v1_base: str, model: str, deep: bool) -> List[Result]:
     elapsed = time.time() - started
 
     if status is None:
-        return [Result(FAIL, "Completion round-trip failed", str(err))]
+        return [Result(FAIL if explicit else WARN,
+                       "Completion round-trip failed", str(err))]
     if status >= 400:
         snippet = json.dumps(body)[:300] if not isinstance(body, str) else body[:300]
-        return [Result(FAIL, "Completion returned HTTP %d" % status, snippet)]
+        return [Result(FAIL if explicit else WARN,
+                       "Completion returned HTTP %d" % status, snippet)]
 
     text = ""
     try:
@@ -533,6 +629,14 @@ def probe_truncation(v1_base: str, model: str) -> Result:
 # Actions
 # --------------------------------------------------------------------------
 
+def sha256_file(path: str, chunk: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(chunk), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def do_download(key: str, dest_dir: str = "./models/llm") -> int:
     spec = UNGATED_MODELS.get(key)
     if spec is None:
@@ -542,24 +646,51 @@ def do_download(key: str, dest_dir: str = "./models/llm") -> int:
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, spec.filename)
     if os.path.exists(dest) and os.path.getsize(dest) > 512 * 1024 * 1024:
-        print("Already present: %s (%.2f GB)"
+        print("Already present: %s (%.2f GB) -- verifying sha256 ..."
               % (dest, os.path.getsize(dest) / (1024 ** 3)))
-        return 0
+        if sha256_file(dest) == spec.sha256:
+            print("sha256 verified.")
+            return 0
+        print("Digest does NOT match the pinned value; re-downloading.")
+        os.remove(dest)
+    # Pin the immutable commit rather than the mutable /main ref, so the bytes
+    # cannot change under us between releases.
+    url = spec.url.replace("/resolve/main/", "/resolve/%s/" % spec.revision)
     print("Downloading %s" % spec.label)
     print("  licence : %s (no HuggingFace login, no gated-repo TOS)" % spec.licence)
     print("  size    : ~%.2f GB" % spec.size_gb)
-    print("  from    : %s" % spec.url)
+    print("  from    : %s" % url)
     print("  to      : %s" % dest)
+    print("  sha256  : %s" % spec.sha256)
     if shutil.which("curl") is None:
         print("curl not found; download manually with the URL above.")
         return 1
     # -C - resumes a partial file, so a dropped download is cheap to retry.
     rc = subprocess.call(["curl", "-L", "--fail", "--retry", "3",
-                          "-C", "-", "-o", dest, spec.url])
+                          "-C", "-", "-o", dest, url])
     if rc != 0:
         print("Download failed (curl exit %d). Re-run to resume." % rc)
         return rc
-    print("Done: %s (%.2f GB)" % (dest, os.path.getsize(dest) / (1024 ** 3)))
+
+    print("Verifying sha256 ...")
+    actual = sha256_file(dest)
+    if actual != spec.sha256:
+        print("DIGEST MISMATCH -- refusing to keep this file.")
+        print("  expected: %s" % spec.sha256)
+        print("  actual  : %s" % actual)
+        print("This file is parsed by a native library, so it is not left on disk.")
+        try:
+            os.remove(dest)
+        except OSError:
+            print("Could not remove %s -- delete it manually." % dest)
+        return 1
+
+    print("Done: %s (%.2f GB), sha256 verified."
+          % (dest, os.path.getsize(dest) / (1024 ** 3)))
+    # A model whose filename does not match LLAMA_MODEL_PATH would still leave
+    # the GGUF check failing, so say what to do next.
+    print("If .env does not already point here, run:")
+    print("    python3 src/preflight.py --write-env local --model %s" % spec.key)
     return 0
 
 
@@ -601,15 +732,32 @@ def do_write_env(provider: str, model_key: Optional[str], path: str = ".env") ->
             print("Unknown model %r." % model_key)
             return 2
         updates["LLAMA_MODEL_PATH"] = "./models/llm/%s" % spec.filename
-    elif provider == "llama-server":
-        updates["LLAMA_SERVER_BASE_URL"] = "http://localhost:8080"
+    elif provider in ("llama-server", "lmstudio", "openai-compat"):
+        # config.py reads OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_MODEL. Writing
+        # anything else leaves the demo pointed at its own default.
+        port = DEFAULT_PORTS.get(provider, 8080)
+        updates["OPENAI_COMPAT_BASE_URL"] = "http://localhost:%d" % port
+        # llama-server ignores the model field; LM Studio needs the loaded id.
+        updates["OPENAI_COMPAT_MODEL"] = (
+            "local-model" if provider != "lmstudio" else "phi-4-mini-instruct")
     else:
         print("Unknown provider %r." % provider)
         return 2
 
     lines: List[str] = []
     if os.path.exists(path):
-        shutil.copyfile(path, path + ".bak")
+        # .env can hold credentials. copyfile() would create the backup at the
+        # default umask (commonly 0644), so tighten it to owner-only and create
+        # it exclusively rather than inheriting whatever was there before.
+        backup = path + ".bak"
+        with open(path, "rb") as src:
+            payload = src.read()
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+        os.chmod(backup, 0o600)
         with open(path, "r", encoding="utf-8") as fh:
             lines = fh.read().splitlines()
 
@@ -639,25 +787,61 @@ def do_write_env(provider: str, model_key: Optional[str], path: str = ".env") ->
 # Reporting
 # --------------------------------------------------------------------------
 
-def run_checks(provider: Optional[str], deep: bool) -> List[Result]:
+def check_viable_path(results: List[Result]) -> Optional[Result]:
+    """
+    Generalises the false-success findings: a survey run must not claim success
+    unless at least ONE inference path is actually usable end to end. Individual
+    engines being down is fine -- having no working path at all is not.
+    """
+    def ok(title: str) -> bool:
+        return any(r.title == title and r.status == OK for r in results)
+
+    local_ok = ok("llama-cpp-python") and ok("Local GGUF")
+    endpoint_ok = ok("Completion round-trip")
+    if local_ok or endpoint_ok:
+        return None
+    return Result(
+        FAIL, "No runnable inference path",
+        "Neither the in-process GGUF path (llama-cpp-python + a local GGUF) nor "
+        "any OpenAI-compatible endpoint is usable, so the demo cannot run "
+        "whichever --infer you pick.",
+        ["python3 src/preflight.py --install ollama --run",
+         "python3 src/preflight.py --download phi-4-mini",
+         "# or start one: llama-server -hf bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M -c 4096 -np 1 --port 8080"])
+
+
+def resolve_env() -> Dict[str, str]:
+    """.env as the base, with the real environment winning (python-dotenv order)."""
     env = dict(load_env())
-    # real environment wins over .env, same as python-dotenv's default
-    for key in list(env):
-        if key in os.environ:
-            env[key] = os.environ[key]
+    # Overlay the whole environment: the previous version only replaced keys that
+    # already existed in .env, so `OPENAI_COMPAT_BASE_URL=... python preflight.py`
+    # was silently ignored when .env did not mention it.
+    env.update(os.environ)
+    return env
+
+
+def run_checks(provider: Optional[str], deep: bool) -> List[Result]:
+    env = resolve_env()
+    local = provider in ("local", "llamacpp")
 
     results = [check_python()]
-    results.extend(check_pydeps())
+    results.extend(check_pydeps(local_required=local))
     results.append(check_embedding_cache(env))
 
     if provider in (None, "local", "llamacpp"):
         results.append(check_gguf(env))
     if provider in (None, "ollama"):
-        results.extend(check_ollama(env, deep))
-    if provider in (None, "llama-server"):
-        results.extend(check_llama_server(env, deep))
+        results.extend(check_ollama(env, deep, explicit=provider == "ollama"))
+    if provider in (None, "llama-server", "openai-compat"):
+        results.extend(check_llama_server(
+            env, deep, explicit=provider in ("llama-server", "openai-compat")))
     if provider in (None, "lmstudio"):
-        results.extend(check_lmstudio(env, deep))
+        results.extend(check_lmstudio(env, deep, explicit=provider == "lmstudio"))
+
+    if provider is None:
+        viable = check_viable_path(results)
+        if viable is not None:
+            results.append(viable)
     return results
 
 
@@ -731,8 +915,11 @@ def main() -> int:
             % (k, s.label, s.size_gb, s.ollama_tag)
             for k, s in UNGATED_MODELS.items()))
     parser.add_argument("--provider",
-                        choices=["local", "llamacpp", "ollama", "llama-server", "lmstudio"],
-                        help="check only this provider (default: all)")
+                        choices=["local", "llamacpp", "ollama", "llama-server",
+                                 "openai-compat", "lmstudio"],
+                        help="check only this provider (default: all). "
+                             "openai-compat checks OPENAI_COMPAT_BASE_URL, which is "
+                             "what --infer openai-compat actually reads.")
     parser.add_argument("--deep", action="store_true",
                         help="add a live probe for silent prompt truncation")
     parser.add_argument("--json", action="store_true",
@@ -748,8 +935,9 @@ def main() -> int:
     parser.add_argument("--run", action="store_true",
                         help="with --install, actually execute the commands")
     parser.add_argument("--write-env", metavar="PROVIDER",
-                        choices=["local", "llamacpp", "ollama", "llama-server"],
-                        help="point .env at a provider (backs up the old file)")
+                        choices=["local", "llamacpp", "ollama", "llama-server",
+                                 "openai-compat", "lmstudio"],
+                        help="point .env at a provider (backs up the old file 0600)")
     parser.add_argument("--model", metavar="MODEL",
                         help="model key for --write-env (%s)" % ", ".join(UNGATED_MODELS))
     args = parser.parse_args()
@@ -763,11 +951,7 @@ def main() -> int:
 
     results = run_checks(args.provider, args.deep)
     if args.one_line:
-        env = dict(load_env())
-        for key in list(env):
-            if key in os.environ:
-                env[key] = os.environ[key]
-        return report_one_line(results, env)
+        return report_one_line(results, resolve_env())
     if args.json:
         payload = {"results": [r.as_dict() for r in results],
                    "fails": sum(1 for r in results if r.status == FAIL),
