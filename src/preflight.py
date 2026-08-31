@@ -54,16 +54,24 @@ OK, WARN, FAIL, INFO = "OK", "WARN", "FAIL", "INFO"
 DEFAULT_PORTS = {"llama-server": 8080, "lmstudio": 1234}
 
 
-def compat_base(env: Dict[str, str], engine: str) -> str:
+def compat_base(env: Dict[str, str], engine: str, explicit: bool = False) -> str:
     """
     Resolve the base URL to probe for an OpenAI-compatible engine.
 
-    Prefers OPENAI_COMPAT_BASE_URL -- the variable the demo actually reads -- but
-    only when it points at this engine's port, so a survey run still discovers an
-    engine on its conventional port instead of probing the other one twice.
+    OPENAI_COMPAT_BASE_URL is the variable the demo actually reads, so when a
+    provider is explicitly selected it is honoured VERBATIM -- any host, any
+    port. Guessing a conventional port there would check a different endpoint
+    from the one the demo will use, which is the whole bug this tool exists to
+    catch (a shared endpoint on a non-standard port is a normal setup).
+
+    Only an unfiltered survey falls back to the conventional port, and only when
+    the configured URL clearly belongs to a different engine -- otherwise a
+    survey would probe the same address twice and miss the other engine.
     """
     port = DEFAULT_PORTS[engine]
     configured = (env.get("OPENAI_COMPAT_BASE_URL") or "").strip().rstrip("/")
+    if configured and explicit:
+        return configured
     if configured:
         tail = configured.rsplit(":", 1)[-1]
         if tail.isdigit() and int(tail) == port:
@@ -83,6 +91,7 @@ class ModelSpec:
     ollama_tag: str
     sha256: str
     revision: str
+    size_bytes: int = 0
     key: str = ""
 
 
@@ -99,6 +108,7 @@ UNGATED_MODELS: Dict[str, ModelSpec] = {
         licence="MIT",
         ollama_tag="phi3.5",
         sha256="e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
+        size_bytes=2393232672,
         revision="6d70da17e749a471ccb62ade694486011a75cda3",
         key="phi-3.5-mini",
     ),
@@ -112,6 +122,7 @@ UNGATED_MODELS: Dict[str, ModelSpec] = {
         licence="MIT",
         ollama_tag="phi4-mini",
         sha256="01999f17c39cc3074afae5e9c539bc82d45f2dd7faa3917c66cbef76fce8c0c2",
+        size_bytes=2491874688,
         revision="7ff82c2aaa4dde30121698a973765f39be5288c0",
         key="phi-4-mini",
     ),
@@ -362,7 +373,7 @@ def _download_fix(path: str) -> List[str]:
             "python3 src/preflight.py --write-env local --model phi-4-mini"]
 
 
-def check_gguf(env: Dict[str, str]) -> Result:
+def check_gguf(env: Dict[str, str], deep: bool = False) -> Result:
     path = env.get("LLAMA_MODEL_PATH", "./models/llm/Phi-3.5-mini-instruct.Q4_K_M.gguf")
     if not os.path.exists(path):
         return Result(FAIL, "Local GGUF missing", path, _download_fix(path))
@@ -371,6 +382,16 @@ def check_gguf(env: Dict[str, str]) -> Result:
         return Result(FAIL, "Local GGUF looks truncated",
                       "%s is only %.2f GB -- a failed or partial download." % (path, size_gb),
                       ["rm %s" % path] + _download_fix(path))
+    # For a model we ship a digest for, the exact byte length is free to check
+    # and catches a substituted or resumed-wrong file that passes the size floor.
+    spec = model_for_path(path)
+    actual_bytes = os.path.getsize(path)
+    if spec is not None and spec.size_bytes and actual_bytes != spec.size_bytes:
+        return Result(FAIL, "Local GGUF has unexpected size",
+                      "%s is %d bytes; %s is %d. Wrong or partial file."
+                      % (path, actual_bytes, spec.label, spec.size_bytes),
+                      ["rm %s" % path] + _download_fix(path))
+
     with open(path, "rb") as fh:
         magic = fh.read(4)
     if magic != b"GGUF":
@@ -378,7 +399,23 @@ def check_gguf(env: Dict[str, str]) -> Result:
                       "%s does not start with the GGUF magic bytes. The demo needs a "
                       "GGUF quantisation, not the raw HF weights." % path,
                       ["rm %s" % path] + _download_fix(path))
-    return Result(OK, "Local GGUF", "%s (%.2f GB)" % (path, size_gb))
+    # Full integrity verification is opt-in: hashing ~2.3 GB costs ~10 s, too
+    # slow to run on every preflight, but worth offering for a file already on
+    # disk that --download never validated.
+    if deep and spec is not None:
+        digest = sha256_file(path)
+        if digest != spec.sha256:
+            return Result(FAIL, "Local GGUF failed digest check",
+                          "%s does not match the pinned sha256 for %s.\n"
+                          "         expected %s\n         actual   %s"
+                          % (path, spec.label, spec.sha256, digest),
+                          ["rm %s" % path] + _download_fix(path))
+        return Result(OK, "Local GGUF", "%s (%.2f GB), sha256 verified"
+                      % (path, size_gb))
+    detail = "%s (%.2f GB)" % (path, size_gb)
+    if spec is not None and not deep:
+        detail += " -- exact size ok; add --deep to verify sha256"
+    return Result(OK, "Local GGUF", detail)
 
 
 # --------------------------------------------------------------------------
@@ -466,7 +503,7 @@ def check_ollama(env: Dict[str, str], deep: bool,
 def check_llama_server(env: Dict[str, str], deep: bool,
                        explicit: bool = False) -> List[Result]:
     results: List[Result] = []
-    base = compat_base(env, "llama-server")
+    base = compat_base(env, "llama-server", explicit)
 
     if shutil.which("llama-server") is None:
         results.append(Result(FAIL if explicit else WARN, "llama-server not installed",
@@ -518,7 +555,7 @@ def check_llama_server(env: Dict[str, str], deep: bool,
 def check_lmstudio(env: Dict[str, str], deep: bool,
                    explicit: bool = False) -> List[Result]:
     results: List[Result] = []
-    base = compat_base(env, "lmstudio")
+    base = compat_base(env, "lmstudio", explicit)
     if shutil.which("lms") is None:
         results.append(Result(FAIL if explicit else INFO,
                               "LM Studio CLI not installed", "",
@@ -829,7 +866,7 @@ def run_checks(provider: Optional[str], deep: bool) -> List[Result]:
     results.append(check_embedding_cache(env))
 
     if provider in (None, "local", "llamacpp"):
-        results.append(check_gguf(env))
+        results.append(check_gguf(env, deep))
     if provider in (None, "ollama"):
         results.extend(check_ollama(env, deep, explicit=provider == "ollama"))
     if provider in (None, "llama-server", "openai-compat"):

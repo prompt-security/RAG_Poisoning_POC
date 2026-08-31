@@ -1,0 +1,99 @@
+name: CI
+
+# These checks deliberately run on a BARE runner: no project dependencies, no
+# model weights, no inference engine. That is the environment in which
+# src/preflight.py has to give a correct answer, and three real defects in this
+# tool were exit-code bugs that only show up here -- preflight reporting success
+# while the demo could not possibly run.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  preflight-contract:
+    name: preflight contract (bare runner, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is what setup.sh pins; the newest version is tested because
+        # preflight must also run under whatever system interpreter a
+        # participant happens to have.
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Byte-compile every source file
+        run: python -m compileall -q src test_preflight.py test_setup.py
+
+      - name: Contract tests
+        run: python test_preflight.py
+
+      # preflight's core promise is that it imports nothing third-party, so it
+      # can report that the dependencies are missing. Nothing is installed in
+      # this job, so simply running it proves that.
+      - name: Must run with no dependencies installed, and must not greenlight
+        run: |
+          set -uo pipefail
+
+          fail() { echo "::error::$1"; exit 1; }
+
+          # No deps, no GGUF, no engine -> the local path cannot run.
+          python src/preflight.py --provider local
+          rc=$?
+          [ "$rc" -ne 0 ] || fail "preflight exited 0 with no dependencies and no model"
+
+          # Nothing is listening, so an explicitly selected endpoint must fail.
+          for provider in llama-server lmstudio openai-compat ollama; do
+            python src/preflight.py --provider "$provider" >/dev/null 2>&1
+            rc=$?
+            [ "$rc" -ne 0 ] || fail "--provider $provider exited 0 with nothing listening"
+          done
+
+          # An unfiltered survey has no usable path at all here, so it must fail too.
+          python src/preflight.py >/dev/null 2>&1
+          rc=$?
+          [ "$rc" -ne 0 ] || fail "survey run exited 0 with no usable inference path"
+
+          # The roster line participants paste must say FAIL, not PASS.
+          line=$(python src/preflight.py --one-line)
+          echo "$line"
+          case "$line" in
+            "PREFLIGHT FAIL:"*) : ;;
+            *) fail "expected a PREFLIGHT FAIL line, got: $line" ;;
+          esac
+
+          # --json stays machine-readable and agrees with the exit status.
+          python src/preflight.py --json > /tmp/pf.json
+          python - <<'PY'
+          import json
+          with open('/tmp/pf.json') as fh:
+              report = json.load(fh)
+          assert report['fails'] > 0, 'json reported no failures on a bare runner'
+          assert report['results'], 'json reported no results at all'
+          print('json ok: %d fail(s), %d warn(s), %d checks'
+                % (report['fails'], report['warns'], len(report['results'])))
+          PY
+
+          echo "All bare-runner assertions held."
+
+      - name: Help text renders and an unknown model is rejected
+        run: |
+          set -uo pipefail
+          python src/preflight.py --help > /dev/null
+
+          python src/preflight.py --download nonexistent-model
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::--download accepted a model that does not exist"
+            exit 1
+          fi
+          echo "unknown model rejected with exit $rc, as expected."
