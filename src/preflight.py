@@ -192,6 +192,38 @@ def _colour(status: str, text: str) -> str:
 ICONS = {OK: "PASS", WARN: "WARN", FAIL: "FAIL", INFO: "INFO"}
 
 
+def parse_env_value(raw: str) -> str:
+    """
+    Parse one .env value the way python-dotenv does.
+
+    Matters because preflight must resolve the SAME endpoint and model the
+    runtime will use. Two rules that a naive split on "#" gets wrong:
+
+      * an unquoted "#" only starts a comment when preceded by whitespace, so
+        http://host:8080#frag and /path/with#hash keep their "#";
+      * a quoted value is taken verbatim, so "a # b" keeps its "#".
+
+    Not reimplemented: escape sequences inside double quotes and variable
+    interpolation. Nothing in this project's .env uses either, and importing
+    python-dotenv here is impossible -- this module has to run before the
+    dependencies exist.
+    """
+    raw = raw.strip()
+    if raw[:1] in ('"', "'"):
+        quote = raw[0]
+        closing = raw.find(quote, 1)
+        if closing == -1:
+            # python-dotenv rejects an unterminated quote and drops the key, so
+            # the runtime will not have this value either. Signal "no value"
+            # rather than inventing one preflight would then go and validate.
+            raise ValueError("unterminated quote in .env value")
+        return raw[1:closing]
+    for i, char in enumerate(raw):
+        if char == "#" and i > 0 and raw[i - 1] in " \t":
+            return raw[:i].strip()
+    return raw
+
+
 def load_env(path: str = ".env") -> Dict[str, str]:
     """Minimal .env reader -- python-dotenv may not be installed yet."""
     env: Dict[str, str] = {}
@@ -203,9 +235,10 @@ def load_env(path: str = ".env") -> Dict[str, str]:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            # strip inline comments, then quotes
-            value = value.split("#", 1)[0].strip().strip('"').strip("'")
-            env[key.strip()] = value
+            try:
+                env[key.strip()] = parse_env_value(value)
+            except ValueError:
+                continue   # malformed line: dotenv drops it, so do we
     return env
 
 
@@ -374,12 +407,17 @@ def check_python() -> Result:
 def check_pydeps(local_required: bool = False) -> List[Result]:
     """Import-check the project dependencies without importing them for real."""
     import importlib.util
+    # torch is not optional: rag_poisoning_demo.py imports utils unconditionally
+    # and utils.py does `import torch` at module level, so every provider needs
+    # it -- including the endpoint-only paths. find_spec() does not import, so
+    # sentence-transformers resolving is not evidence that torch is installed.
     wanted = [
         ("langchain", "langchain"),
         ("langchain_community", "langchain-community"),
         ("langchain_openai", "langchain-openai"),
         ("chromadb", "chromadb"),
         ("sentence_transformers", "sentence-transformers"),
+        ("torch", "torch"),
         ("dotenv", "python-dotenv"),
     ]
     results = []
@@ -580,8 +618,21 @@ def check_ollama(env: Dict[str, str], deep: bool,
 
     # Context: ollama truncates SILENTLY, which is the single nastiest failure
     # mode here -- the demo just quietly stops working.
-    ctx_env = os.environ.get("OLLAMA_CONTEXT_LENGTH")
-    if ctx_env and ctx_env.isdigit() and int(ctx_env) >= MIN_CTX:
+    ctx_env = env.get("OLLAMA_CONTEXT_LENGTH")
+    ctx_ok = bool(ctx_env) and ctx_env.isdigit() and int(ctx_env) >= MIN_CTX
+    if ctx_ok and "OLLAMA_CONTEXT_LENGTH" not in os.environ:
+        # No demo code reads this variable -- it configures the `ollama serve`
+        # process, so a value that only lives in .env has no effect at all.
+        results.append(Result(
+            WARN, "OLLAMA_CONTEXT_LENGTH is only set in .env",
+            "%s is set to %s in .env, but nothing in the demo reads it -- it "
+            "configures the `ollama serve` process. Export it in the shell that "
+            "starts the daemon, or the prompt is still truncated silently."
+            % ("OLLAMA_CONTEXT_LENGTH", ctx_env),
+            ["export OLLAMA_CONTEXT_LENGTH=%s" % ctx_env,
+             "export OLLAMA_KEEP_ALIVE=60m",
+             "# then restart: ollama serve"]))
+    elif ctx_ok:
         results.append(Result(OK, "OLLAMA_CONTEXT_LENGTH", ctx_env))
     else:
         results.append(Result(

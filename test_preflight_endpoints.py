@@ -332,6 +332,57 @@ class TestRemoteOllamaIsProbed(unittest.TestCase):
         self.assertTrue(has_fail(results))
 
 
+class TestOllamaContextLengthSourcing(unittest.TestCase):
+    """
+    The context check read os.environ while every other check read the resolved
+    map. Worth more than consistency: no demo code reads OLLAMA_CONTEXT_LENGTH
+    at all -- it configures the `ollama serve` process -- so a value living only
+    in .env has no effect, and reporting it as satisfied would be wrong.
+    """
+
+    def _context_results(self, env):
+        real = shutil.which
+        shutil.which = lambda n, *a, **k: "/usr/bin/ollama" if n == "ollama" \
+            else real(n, *a, **k)
+        try:
+            results = preflight.check_ollama(env, False, explicit=False)
+        finally:
+            shutil.which = real
+        return [r for r in results if "CONTEXT_LENGTH" in r.title]
+
+    def setUp(self):
+        self._saved = os.environ.pop("OLLAMA_CONTEXT_LENGTH", None)
+
+    def tearDown(self):
+        if self._saved is not None:
+            os.environ["OLLAMA_CONTEXT_LENGTH"] = self._saved
+        else:
+            os.environ.pop("OLLAMA_CONTEXT_LENGTH", None)
+
+    def test_value_only_in_dotenv_is_flagged_as_ineffective(self):
+        with StubServer(ollama_tags=("phi4-mini:latest",)) as stub:
+            found = self._context_results({"OLLAMA_BASE_URL": stub.base,
+                                           "OLLAMA_MODEL": "phi4-mini",
+                                           "OLLAMA_CONTEXT_LENGTH": "4096"})
+        self.assertEqual([r.status for r in found], [WARN])
+        self.assertIn("only set in .env", found[0].title)
+
+    def test_exported_value_is_accepted(self):
+        os.environ["OLLAMA_CONTEXT_LENGTH"] = "4096"
+        with StubServer(ollama_tags=("phi4-mini:latest",)) as stub:
+            found = self._context_results({"OLLAMA_BASE_URL": stub.base,
+                                           "OLLAMA_MODEL": "phi4-mini",
+                                           "OLLAMA_CONTEXT_LENGTH": "4096"})
+        self.assertEqual([r.status for r in found], [OK])
+
+    def test_absent_value_still_warns_about_silent_truncation(self):
+        with StubServer(ollama_tags=("phi4-mini:latest",)) as stub:
+            found = self._context_results({"OLLAMA_BASE_URL": stub.base,
+                                           "OLLAMA_MODEL": "phi4-mini"})
+        self.assertEqual([r.status for r in found], [WARN])
+        self.assertIn("not raised", found[0].title)
+
+
 class TestNextStepAgainstALiveEndpoint(unittest.TestCase):
     def test_endpoint_only_setup_is_told_to_pass_infer(self):
         with StubServer() as stub:

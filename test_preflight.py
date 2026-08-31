@@ -359,6 +359,76 @@ class TestMalformedInputDoesNotCrash(unittest.TestCase):
             "hi")
 
 
+class TestEnvValueParsingMatchesDotenv(unittest.TestCase):
+    """
+    preflight must resolve the SAME endpoint and model the runtime resolves.
+    A naive split on "#" cut values that python-dotenv keeps, so a URL fragment
+    or a path containing "#" pointed preflight at a different endpoint.
+
+    python-dotenv cannot be imported here (this module runs before the
+    dependencies exist), so its rules are matched rather than reused. The
+    expectations below were taken from real dotenv_values() output.
+    """
+
+    CASES = [
+        ("3  # trailing comment", "3", "comment after whitespace is stripped"),
+        ("3\t# tab then comment", "3", "tab counts as whitespace"),
+        ("http://h:8080#frag", "http://h:8080#frag", "'#' without whitespace is kept"),
+        ("/path/with#hash", "/path/with#hash", "'#' inside a path is kept"),
+        ('"a # b"', "a # b", "'#' inside double quotes is kept"),
+        ("'a # b'", "a # b", "'#' inside single quotes is kept"),
+        ("  spaced  ", "spaced", "surrounding whitespace is trimmed"),
+        ("", "", "empty value"),
+        ("phi4-mini", "phi4-mini", "ordinary value"),
+    ]
+
+    def test_values_parse_the_way_dotenv_parses_them(self):
+        for raw, expected, why in self.CASES:
+            with self.subTest(reason=why):
+                self.assertEqual(preflight.parse_env_value(raw), expected)
+
+    def test_unterminated_quote_drops_the_key(self):
+        # dotenv rejects the statement and the runtime never sees the key, so
+        # preflight must not invent a value it would then go and validate.
+        with self.assertRaises(ValueError):
+            preflight.parse_env_value('"unterminated')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, ".env")
+            with open(path, "w") as fh:
+                fh.write('GOOD=1\nBAD="unterminated\nALSO=2\n')
+            env = preflight.load_env(path)
+        self.assertEqual(env.get("GOOD"), "1")
+        self.assertEqual(env.get("ALSO"), "2")
+        self.assertNotIn("BAD", env)
+
+    def test_a_fragment_bearing_endpoint_survives_into_the_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, ".env")
+            with open(path, "w") as fh:
+                fh.write("OPENAI_COMPAT_BASE_URL=http://host:8080#frag\n")
+            self.assertEqual(preflight.load_env(path)["OPENAI_COMPAT_BASE_URL"],
+                             "http://host:8080#frag")
+
+
+class TestTorchIsAMandatoryDependency(unittest.TestCase):
+    """
+    rag_poisoning_demo.py imports utils unconditionally and utils.py does
+    `import torch` at module level, so torch is required by EVERY provider --
+    including the endpoint-only ones. find_spec() does not import, so
+    sentence-transformers resolving is not evidence that torch is present.
+    """
+
+    def test_torch_is_in_the_checked_set(self):
+        import importlib.util
+        results = preflight.check_pydeps()
+        deps = [r for r in results if r.title == "Project dependencies"][0]
+        if importlib.util.find_spec("torch") is None:
+            self.assertEqual(deps.status, FAIL)
+            self.assertIn("torch", deps.detail)
+        else:
+            self.assertEqual(deps.status, OK)
+
+
 class TestNextStepMatchesTheVerifiedPath(unittest.TestCase):
     """
     `python3 src/rag_poisoning_demo.py` with no --infer selects provider=None and
