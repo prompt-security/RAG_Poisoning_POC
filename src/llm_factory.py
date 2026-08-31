@@ -18,6 +18,8 @@ class LLMFactory:
         
         if provider == 'ollama':
             return LLMFactory._create_ollama_llm(config)
+        elif provider == 'openai-compat':
+            return LLMFactory._create_openai_compat_llm(config)
         elif provider == 'deepseek':
             return LLMFactory._create_deepseek_llm(config)
         else:
@@ -31,13 +33,35 @@ class LLMFactory:
         from langchain_openai import ChatOpenAI
         
         return ChatOpenAI(
-            model="llama3:8b-instruct-q5_0",  # Use smaller model for faster responses
+            model=config.ollama_model,
             openai_api_base=f"{config.ollama_base_url}/v1",
             openai_api_key="dummy-key",
             temperature=0.7,
             max_tokens=256  # Limit token count for faster responses
         )
     
+    @staticmethod
+    def _create_openai_compat_llm(config):
+        """
+        Create an LLM against any OpenAI-compatible endpoint.
+
+        Covers llama-server (llama.cpp) and LM Studio, which expose /v1 but are
+        not Ollama. llama-server ignores the model field entirely, so the value
+        only has to be non-empty for it.
+        """
+        print(f"Using OpenAI-compatible endpoint: {config.openai_compat_base_url} "
+              f"(model: {config.openai_compat_model})")
+
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=config.openai_compat_model,
+            openai_api_base=f"{config.openai_compat_base_url}/v1",
+            openai_api_key=os.environ.get('OPENAI_COMPAT_API_KEY', 'dummy-key'),
+            temperature=0.7,
+            max_tokens=256
+        )
+
     @staticmethod
     def _create_deepseek_llm(config):
         """Create DeepSeek LLM instance"""
