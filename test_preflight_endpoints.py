@@ -45,7 +45,7 @@ class _StubHandler(BaseHTTPRequestHandler):
     malformed = False
     null_content = False      # a valid 2xx tool-call shape: content is null
     text_body = False         # 200 OK with a plain-text body
-    require_token = None      # reject unless this bearer token is presented
+    ollama_tags = None        # serve /api/tags instead, for the Ollama shape
 
     def log_message(self, *_args):
         pass  # keep test output clean
@@ -58,16 +58,10 @@ class _StubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _authorized(self):
-        cls = type(self)
-        if cls.require_token is None:
-            return True
-        return self.headers.get("Authorization") == "Bearer " + cls.require_token
-
     def do_GET(self):
         cls = type(self)
-        if not self._authorized():
-            self._send({"error": "unauthorized"}, 401)
+        if cls.ollama_tags is not None and self.path == "/api/tags":
+            self._send({"models": [{"name": n} for n in cls.ollama_tags]})
             return
         if cls.text_body:
             body = b"not json at all"
@@ -89,9 +83,6 @@ class _StubHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length) or b"{}")
-        if not self._authorized():
-            self._send({"error": "unauthorized"}, 401)
-            return
         if type(self).null_content:
             self._send({"choices": [{"message": {"role": "assistant",
                                                  "content": None}}]})
@@ -262,35 +253,6 @@ class TestMalformedEndpointResponses(unittest.TestCase):
                 preflight.check_ollama(env, False, explicit=True), list)
 
 
-class TestAuthenticatedEndpoint(unittest.TestCase):
-    """
-    The runtime sends OPENAI_COMPAT_API_KEY as a bearer token, so preflight has
-    to as well or it reports a working endpoint as broken.
-    """
-
-    TOKEN = "sekret-token"
-
-    def test_without_the_token_the_endpoint_reports_401(self):
-        with StubServer(require_token=self.TOKEN) as stub:
-            results = preflight.check_llama_server(
-                {"OPENAI_COMPAT_BASE_URL": stub.base}, False, explicit=True)
-        self.assertTrue(has_fail(results))
-
-    def test_with_the_token_the_round_trip_succeeds(self):
-        with StubServer(require_token=self.TOKEN) as stub:
-            env = {"OPENAI_COMPAT_BASE_URL": stub.base,
-                   "OPENAI_COMPAT_API_KEY": self.TOKEN}
-            results = preflight.check_llama_server(env, False, explicit=True)
-        self.assertIn(OK, statuses(results, "Completion round-trip"))
-
-    def test_the_token_is_never_echoed_into_output(self):
-        with StubServer(require_token=self.TOKEN) as stub:
-            env = {"OPENAI_COMPAT_BASE_URL": stub.base,
-                   "OPENAI_COMPAT_API_KEY": self.TOKEN}
-            results = preflight.check_llama_server(env, False, explicit=True)
-        self.assertNotIn(self.TOKEN, json.dumps([r.as_dict() for r in results]))
-
-
 class TestRemoteEndpointNeedsNoLocalBinary(unittest.TestCase):
     """
     A healthy remote or shared endpoint was failed for want of a local
@@ -323,6 +285,43 @@ class TestRemoteEndpointNeedsNoLocalBinary(unittest.TestCase):
         try:
             env = {"OPENAI_COMPAT_BASE_URL": "http://127.0.0.1:59996"}
             results = preflight.check_llama_server(env, False, explicit=True)
+        finally:
+            shutil.which = real
+        self.assertTrue(has_fail(results))
+
+
+class TestRemoteOllamaIsProbed(unittest.TestCase):
+    """
+    check_ollama returned from its local-binary guard before probing, so a
+    reachable OLLAMA_BASE_URL on another machine never produced a round-trip and
+    could not be recommended. llama-server and LM Studio were reordered for this
+    already; Ollama was missed.
+    """
+
+    def _without_ollama(self):
+        real = shutil.which
+        return real, (lambda n, *a, **k: None if n == "ollama" else real(n, *a, **k))
+
+    def test_reachable_remote_ollama_is_probed_without_a_local_binary(self):
+        real, fake = self._without_ollama()
+        shutil.which = fake
+        try:
+            with StubServer(ollama_tags=("phi4-mini:latest",)) as stub:
+                env = {"OLLAMA_BASE_URL": stub.base, "OLLAMA_MODEL": "phi4-mini"}
+                results = preflight.check_ollama(env, False, explicit=True)
+        finally:
+            shutil.which = real
+        self.assertIn(OK, statuses(results, "Completion round-trip"))
+        self.assertIsNone(preflight.check_viable_path(results))
+        self.assertEqual(preflight.next_step(results),
+                         "python3 src/rag_poisoning_demo.py --infer ollama")
+
+    def test_missing_binary_still_fails_when_nothing_answers(self):
+        real, fake = self._without_ollama()
+        shutil.which = fake
+        try:
+            results = preflight.check_ollama(
+                {"OLLAMA_BASE_URL": "http://127.0.0.1:59995"}, False, explicit=True)
         finally:
             shutil.which = real
         self.assertTrue(has_fail(results))

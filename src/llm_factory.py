@@ -48,6 +48,11 @@ class LLMFactory:
         Covers llama-server (llama.cpp) and LM Studio, which expose /v1 but are
         not Ollama. llama-server ignores the model field entirely, so the value
         only has to be non-empty for it.
+
+        No credentials: every endpoint this demo supports is unauthenticated, so
+        the key is the same literal placeholder the Ollama provider uses. If an
+        authenticated endpoint is ever needed, add it here AND in preflight
+        deliberately -- a half-configured bearer token is worse than none.
         """
         print(f"Using OpenAI-compatible endpoint: {config.openai_compat_base_url} "
               f"(model: {config.openai_compat_model})")
@@ -57,7 +62,7 @@ class LLMFactory:
         return ChatOpenAI(
             model=config.openai_compat_model,
             openai_api_base=f"{config.openai_compat_base_url}/v1",
-            openai_api_key=os.environ.get('OPENAI_COMPAT_API_KEY', 'dummy-key'),
+            openai_api_key="dummy-key",
             temperature=0.7,
             max_tokens=256
         )

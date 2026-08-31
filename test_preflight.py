@@ -382,30 +382,6 @@ class TestNextStepMatchesTheVerifiedPath(unittest.TestCase):
         self.assertIsNone(preflight.next_step([preflight.Result(FAIL, "anything")]))
 
 
-class TestRuntimeCredentialsAreReused(unittest.TestCase):
-    """
-    The runtime reads .keys via Config._load_api_keys, so preflight must see the
-    same credentials or it reports a working authenticated endpoint as broken.
-    """
-
-    def test_keys_file_is_parsed_like_config_does(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, ".keys")
-            with open(path, "w") as fh:
-                fh.write('# comment\nOPENAI_COMPAT_API_KEY="sekret"\nOTHER=plain\n')
-            keys = preflight.load_keys(path)
-        self.assertEqual(keys["OPENAI_COMPAT_API_KEY"], "sekret")
-        self.assertEqual(keys["OTHER"], "plain")
-
-    def test_missing_keys_file_is_not_an_error(self):
-        self.assertEqual(preflight.load_keys("/nonexistent/.keys"), {})
-
-    def test_dummy_placeholder_is_not_treated_as_a_token(self):
-        self.assertIsNone(preflight.endpoint_token({}))
-        self.assertEqual(
-            preflight.endpoint_token({"OPENAI_COMPAT_API_KEY": "sekret"}), "sekret")
-
-
 class TestEnvHandling(unittest.TestCase):
     def test_write_env_sets_the_variables_config_py_reads(self):
         with tempfile.TemporaryDirectory() as tmp:

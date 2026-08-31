@@ -209,15 +209,18 @@ def load_env(path: str = ".env") -> Dict[str, str]:
     return env
 
 
-def http_json(url: str, payload: Optional[dict] = None, timeout: float = 10.0,
-              token: Optional[str] = None):
-    """GET or POST JSON. Returns (status_code, parsed_body_or_text, error)."""
+def http_json(url: str, payload: Optional[dict] = None, timeout: float = 10.0):
+    """
+    GET or POST JSON. Returns (status_code, parsed_body_or_text, error).
+
+    Sends no credentials, by design: every endpoint this demo supports
+    (llama-server, Ollama, LM Studio) is unauthenticated, and llm_factory sends
+    a literal placeholder key. Nothing here should ever carry a bearer token --
+    if an authenticated endpoint is ever in scope, add it deliberately on BOTH
+    sides and handle redirects, which strip nothing by default.
+    """
     data = None
     headers = {"Accept": "application/json"}
-    # Mirror what ChatOpenAI sends, so an authenticated endpoint that works at
-    # runtime is not reported as broken. Never echoed into any Result.
-    if token and token != "dummy-key":
-        headers["Authorization"] = "Bearer %s" % token
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -522,14 +525,18 @@ def check_ollama(env: Dict[str, str], deep: bool,
     configured = (env.get("OLLAMA_MODEL") or "").strip()
     model = configured or "phi4-mini"
 
-    if shutil.which("ollama") is None:
-        results.append(Result(FAIL if explicit else INFO, "ollama not installed", "",
-                              install_fix("ollama")))
-        return results
-    results.append(Result(OK, "ollama installed", shutil.which("ollama")))
-
+    # Probe FIRST, matching llama-server and LM Studio: OLLAMA_BASE_URL may point
+    # at another machine, where a local binary is beside the point.
     status, body, err = http_json(base + "/api/tags", timeout=4.0)
     if status is None:
+        if shutil.which("ollama") is None:
+            results.append(Result(
+                FAIL if explicit else INFO, "ollama not installed",
+                "Nothing is answering at %s and there is no local binary to "
+                "start." % redact_url(base),
+                install_fix("ollama")))
+            return results
+        results.append(Result(OK, "ollama installed", shutil.which("ollama")))
         results.append(Result(
             FAIL if explicit else INFO, "ollama daemon not reachable",
             "%s -- %s" % (redact_url(base), err),
@@ -597,11 +604,9 @@ def check_llama_server(env: Dict[str, str], deep: bool,
                        explicit: bool = False) -> List[Result]:
     results: List[Result] = []
     base = compat_base(env, "llama-server", explicit)
-    token = endpoint_token(env)
-
     # Probe FIRST. A reachable endpoint is sufficient on its own -- it may be a
     # shared or remote server, in which case a local binary is irrelevant.
-    status, body, err = http_json(base + "/v1/models", timeout=4.0, token=token)
+    status, body, err = http_json(base + "/v1/models", timeout=4.0)
     if status is None:
         if shutil.which("llama-server") is None:
             results.append(Result(
@@ -628,7 +633,7 @@ def check_llama_server(env: Dict[str, str], deep: bool,
     results.append(Result(OK, "llama-server responding", redact_url(base)))
 
     # /props is authoritative for the real context size.
-    status, props, err = http_json(base + "/props", timeout=4.0, token=token)
+    status, props, err = http_json(base + "/props", timeout=4.0)
     n_ctx = None
     if isinstance(props, dict):
         settings = props.get("default_generation_settings")
@@ -655,7 +660,7 @@ def check_llama_server(env: Dict[str, str], deep: bool,
             "Requesting %r while the server lists %s. llama-server ignores the "
             "model field, so this is harmless here." % (model, ", ".join(served))))
     results.extend(probe_chat(base + "/v1", model, deep, explicit,
-                              provider="openai-compat", token=token))
+                              provider="openai-compat"))
     return results
 
 
@@ -663,10 +668,8 @@ def check_lmstudio(env: Dict[str, str], deep: bool,
                    explicit: bool = False) -> List[Result]:
     results: List[Result] = []
     base = compat_base(env, "lmstudio", explicit)
-    token = endpoint_token(env)
-
     # Probe first: a reachable endpoint needs no local CLI (it may be remote).
-    status, body, err = http_json(base + "/v1/models", timeout=4.0, token=token)
+    status, body, err = http_json(base + "/v1/models", timeout=4.0)
     if status is None:
         if shutil.which("lms") is None:
             results.append(Result(FAIL if explicit else INFO,
@@ -700,7 +703,7 @@ def check_lmstudio(env: Dict[str, str], deep: bool,
         return results
 
     results.extend(probe_chat(base + "/v1", model, deep, explicit,
-                              provider="openai-compat", token=token))
+                              provider="openai-compat"))
     return results
 
 
@@ -722,8 +725,8 @@ def completion_text(body) -> Optional[str]:
 
 
 def probe_chat(v1_base: str, model: str, deep: bool,
-               explicit: bool = True, provider: Optional[str] = None,
-               token: Optional[str] = None) -> List[Result]:
+               explicit: bool = True,
+               provider: Optional[str] = None) -> List[Result]:
     """Round-trip a real completion, then optionally probe for silent truncation."""
     import time
     results: List[Result] = []
@@ -733,7 +736,7 @@ def probe_chat(v1_base: str, model: str, deep: bool,
         {"model": model, "temperature": 0,
          "max_tokens": 8,
          "messages": [{"role": "user", "content": "Reply with exactly: READY"}]},
-        timeout=90.0, token=token)
+        timeout=90.0)
     elapsed = time.time() - started
 
     if status is None:
@@ -759,12 +762,11 @@ def probe_chat(v1_base: str, model: str, deep: bool,
                               "%.1fs for 8 tokens. A 25-slide live demo will drag." % elapsed))
 
     if deep:
-        results.append(probe_truncation(v1_base, model, token=token))
+        results.append(probe_truncation(v1_base, model))
     return results
 
 
-def probe_truncation(v1_base: str, model: str,
-                    token: Optional[str] = None) -> Result:
+def probe_truncation(v1_base: str, model: str) -> Result:
     """
     Detect SILENT prompt truncation.
 
@@ -781,7 +783,7 @@ def probe_truncation(v1_base: str, model: str,
         v1_base + "/chat/completions",
         {"model": model, "temperature": 0, "max_tokens": 16,
          "messages": [{"role": "user", "content": prompt}]},
-        timeout=120.0, token=token)
+        timeout=120.0)
 
     if status is None:
         return Result(WARN, "Truncation probe inconclusive", str(err))
@@ -1008,38 +1010,15 @@ def check_viable_path(results: List[Result]) -> Optional[Result]:
          "# or start one: llama-server -hf bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M -c 4096 -np 1 --port 8080"])
 
 
-def load_keys(path: str = ".keys") -> Dict[str, str]:
-    """
-    Read the repo's .keys file, the way Config._load_api_keys does.
-
-    Without this, preflight cannot see OPENAI_COMPAT_API_KEY and reports an
-    authenticated endpoint as unreachable while the demo talks to it happily.
-    """
-    keys: Dict[str, str] = {}
-    if not os.path.exists(path):
-        return keys
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                keys[key.strip()] = value.strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return keys
-
-
-def endpoint_token(env: Dict[str, str]) -> Optional[str]:
-    """The bearer token llm_factory would use for an OpenAI-compatible endpoint."""
-    return env.get("OPENAI_COMPAT_API_KEY") or None
-
-
 def resolve_env() -> Dict[str, str]:
-    """.env as the base, then .keys, with the real environment winning."""
+    """
+    .env as the base, with the real environment winning (python-dotenv order).
+
+    Deliberately does NOT read .keys. That file holds the DeepSeek API key, which
+    belongs to a provider preflight does not check, and reading credentials here
+    served only a bearer-token path that no supported endpoint needs.
+    """
     env = dict(load_env())
-    env.update(load_keys())
     # Overlay the whole environment: the previous version only replaced keys that
     # already existed in .env, so `OPENAI_COMPAT_BASE_URL=... python preflight.py`
     # was silently ignored when .env did not mention it.
