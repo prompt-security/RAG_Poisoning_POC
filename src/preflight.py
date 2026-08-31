@@ -277,6 +277,21 @@ def check_embedding_cache(env: Dict[str, str]) -> Result:
         ["./setup.sh --no-local  # pre-downloads the embedding model"])
 
 
+def embedding_dim(env: Dict[str, str]) -> Optional[int]:
+    """Read the embedding width from the cached HF snapshot, without torch."""
+    home = env.get("SENTENCE_TRANSFORMERS_HOME", "./models/embedding")
+    for root, _dirs, files in os.walk(home):
+        if "config.json" in files:
+            try:
+                with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+                    dim = json.load(fh).get("hidden_size")
+                if isinstance(dim, int):
+                    return dim
+            except (ValueError, OSError):
+                continue
+    return None
+
+
 def check_gguf(env: Dict[str, str]) -> Result:
     path = env.get("LLAMA_MODEL_PATH", "./models/llm/Phi-3.5-mini-instruct.Q4_K_M.gguf")
     if not os.path.exists(path):
@@ -670,6 +685,43 @@ def report(results: List[Result]) -> int:
     return 0
 
 
+def report_one_line(results: List[Result], env: Dict[str, str]) -> int:
+    """
+    Emit a single pasteable line for the workshop pre-flight roster.
+
+    Participants paste this into the shared thread 24h ahead so the instructor
+    can see the real BYO success rate before the room fills.
+    """
+    first_fail = next((r for r in results if r.status == FAIL), None)
+    if first_fail is not None:
+        cmds = [c.split("#", 1)[0].strip() for c in first_fail.fix]
+        fix = ("; ".join(c for c in cmds if c)
+               or "see the full report: python3 src/preflight.py")
+        print("PREFLIGHT FAIL: %s -- %s" % (first_fail.title, fix))
+        return 1
+
+    parts = ["python %d.%d.%d" % sys.version_info[:3]]
+    parts.append("deps ok")
+    dim = embedding_dim(env)
+    parts.append("embeddings cached (dim %s)" % dim if dim else "embeddings cached")
+
+    endpoint = next((r for r in results
+                     if r.title in ("llama-server responding", "ollama daemon up",
+                                    "LM Studio server up")), None)
+    fired = next((r for r in results if r.title == "Completion round-trip"), None)
+    if endpoint is not None:
+        parts.append("endpoint %s reachable" % (endpoint.detail or "ok"))
+    gguf = next((r for r in results if r.title == "Local GGUF"), None)
+    if endpoint is None and gguf is not None and gguf.status == OK:
+        parts.append("local GGUF ok")
+    if fired is not None:
+        said = fired.detail.split("said ")[-1] if "said " in fired.detail else "ok"
+        parts.append("model fired: %s" % said)
+
+    print("PREFLIGHT PASS: " + " | ".join(parts))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Preflight and configure the RAG Poisoning demo.",
@@ -685,6 +737,9 @@ def main() -> int:
                         help="add a live probe for silent prompt truncation")
     parser.add_argument("--json", action="store_true",
                         help="emit machine-readable results")
+    parser.add_argument("--one-line", action="store_true",
+                        help="emit a single pasteable PASS/FAIL line for the "
+                             "workshop pre-flight roster")
     parser.add_argument("--download", metavar="MODEL",
                         help="download an ungated GGUF (%s)" % ", ".join(UNGATED_MODELS))
     parser.add_argument("--install", metavar="ENGINE",
@@ -707,6 +762,12 @@ def main() -> int:
         return do_write_env(args.write_env, args.model)
 
     results = run_checks(args.provider, args.deep)
+    if args.one_line:
+        env = dict(load_env())
+        for key in list(env):
+            if key in os.environ:
+                env[key] = os.environ[key]
+        return report_one_line(results, env)
     if args.json:
         payload = {"results": [r.as_dict() for r in results],
                    "fails": sum(1 for r in results if r.status == FAIL),
