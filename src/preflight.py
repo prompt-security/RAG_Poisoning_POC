@@ -33,6 +33,7 @@ import socket
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -73,9 +74,11 @@ def compat_base(env: Dict[str, str], engine: str, explicit: bool = False) -> str
     if configured and explicit:
         return configured
     if configured:
-        tail = configured.rsplit(":", 1)[-1]
-        if tail.isdigit() and int(tail) == port:
-            return configured
+        try:
+            if urllib.parse.urlsplit(configured).port == port:
+                return configured
+        except ValueError:
+            pass  # malformed port: fall through to the conventional default
     return "http://localhost:%d" % port
 
 
@@ -227,12 +230,65 @@ def http_json(url: str, payload: Optional[dict] = None, timeout: float = 10.0):
         return None, None, str(getattr(exc, "reason", exc))
 
 
-def port_open(host: str, port: int, timeout: float = 1.5) -> bool:
+def redact_url(url: str) -> str:
+    """
+    A URL safe to print.
+
+    Strips userinfo, query and fragment. --one-line output is meant to be pasted
+    into a shared thread, so a token embedded in the endpoint URL must not travel
+    with it. The raw value is still used for probing.
+    """
     try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "(unparseable URL)"
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc += ":%d" % parts.port
+    if parts.username:
+        netloc = "***@" + netloc
+    shown = urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    if parts.query or parts.fragment:
+        shown += " (query redacted)"
+    return shown or "(empty URL)"
+
+
+def resolve_probe_model(env: Dict[str, str], body, fallback: str = "local-model"):
+    """
+    Which model will the demo actually ask for, and what does the server serve?
+
+    config.py sends OPENAI_COMPAT_MODEL, so that is the name to validate. Probing
+    whatever /v1/models happens to list first can pass while the demo 404s on a
+    model that is not loaded.
+    """
+    served: List[str] = []
+    if isinstance(body, dict) and isinstance(body.get("data"), list):
+        served = [m.get("id") for m in body["data"]
+                  if isinstance(m, dict) and m.get("id")]
+    configured = (env.get("OPENAI_COMPAT_MODEL") or "").strip()
+    if configured:
+        return configured, served
+    return (served[0] if served else fallback), served
+
+
+def check_base_url_shape(env: Dict[str, str]) -> Optional[Result]:
+    """
+    config.py appends /v1 itself, so a base URL that already carries a path
+    becomes /v1/v1 and 404s. This is a documented participant trip-hazard.
+    """
+    raw = (env.get("OPENAI_COMPAT_BASE_URL") or "").strip()
+    if not raw:
+        return None
+    path = urllib.parse.urlsplit(raw).path.rstrip("/")
+    if path:
+        return Result(
+            WARN, "OPENAI_COMPAT_BASE_URL is not a bare origin",
+            "%r has a path. config.py appends /v1 itself, so this becomes "
+            "%s/v1 and 404s. Use scheme://host:port only."
+            % (redact_url(raw), redact_url(raw)),
+            ["OPENAI_COMPAT_BASE_URL=%s" % redact_url(
+                urllib.parse.urlunsplit(urllib.parse.urlsplit(raw)[:2] + ("", "", "")))])
+    return None
 
 
 def install_fix(engine: str) -> List[str]:
@@ -441,7 +497,7 @@ def check_ollama(env: Dict[str, str], deep: bool,
     if status is None:
         results.append(Result(
             FAIL if explicit else INFO, "ollama daemon not reachable",
-            "%s -- %s" % (base, err),
+            "%s -- %s" % (redact_url(base), err),
             ["ollama serve  # leave this running in another terminal"]))
         return results
 
@@ -518,13 +574,16 @@ def check_llama_server(env: Dict[str, str], deep: bool,
         spec = UNGATED_MODELS["phi-4-mini"]
         results.append(Result(
             FAIL if explicit else INFO, "llama-server not running",
-            "%s -- %s" % (base, err),
-            ["llama-server -hf bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M \\",
-             "    -c %d -np 1 -cb --host 127.0.0.1 --port 8080 -a local-model --jinja" % RECOMMENDED_CTX,
+            "%s -- %s" % (redact_url(base), err),
+            # One line, no continuation: --one-line joins these with "; ", and a
+            # trailing backslash would make the pasted command invalid.
+            ["llama-server -hf bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M "
+             "-c %d -np 1 -cb --host 127.0.0.1 --port 8080 -a local-model --jinja"
+             % RECOMMENDED_CTX,
              "# -c is DIVIDED by -np, so -c must be >= %d * np" % MIN_CTX]))
         return results
 
-    results.append(Result(OK, "llama-server responding", base))
+    results.append(Result(OK, "llama-server responding", redact_url(base)))
 
     # /props is authoritative for the real context size.
     status, props, err = http_json(base + "/props", timeout=4.0)
@@ -536,7 +595,7 @@ def check_llama_server(env: Dict[str, str], deep: bool,
     if isinstance(n_ctx, int):
         if n_ctx < MIN_CTX:
             results.append(Result(
-                FAIL, "llama-server context too small",
+                FAIL if explicit else WARN, "llama-server context too small",
                 "n_ctx=%d, need >= %d. Remember -c is DIVIDED by -np." % (n_ctx, MIN_CTX),
                 ["# restart with: -c %d -np 1" % RECOMMENDED_CTX]))
         elif n_ctx < RECOMMENDED_CTX:
@@ -545,10 +604,13 @@ def check_llama_server(env: Dict[str, str], deep: bool,
         else:
             results.append(Result(OK, "llama-server context", "n_ctx=%d" % n_ctx))
 
-    served = "local-model"
-    if isinstance(body, dict) and body.get("data"):
-        served = body["data"][0].get("id", served)
-    results.extend(probe_chat(base + "/v1", served, deep, explicit))
+    model, served = resolve_probe_model(env, body)
+    if served and model not in served:
+        results.append(Result(
+            INFO, "Model name differs from the served id",
+            "Requesting %r while the server lists %s. llama-server ignores the "
+            "model field, so this is harmless here." % (model, ", ".join(served))))
+    results.extend(probe_chat(base + "/v1", model, deep, explicit))
     return results
 
 
@@ -563,21 +625,32 @@ def check_lmstudio(env: Dict[str, str], deep: bool,
     else:
         results.append(Result(OK, "LM Studio CLI installed", shutil.which("lms")))
 
-    if not port_open("127.0.0.1", int(base.rsplit(":", 1)[-1])):
+    status, body, err = http_json(base + "/v1/models", timeout=4.0)
+    if status is None:
         results.append(Result(
             FAIL if explicit else INFO, "LM Studio server not running",
-            "Its server is OFF by default and models JIT-load with a 25s+ stall.",
+            "%s -- %s. Its server is OFF by default and models JIT-load with a "
+            "25s+ stall." % (redact_url(base), err),
             ["lms server start --port 1234",
              "lms load phi-4-mini-instruct --context-length %d --parallel 1 --ttl 3600" % RECOMMENDED_CTX]))
         return results
 
-    results.append(Result(OK, "LM Studio server up", base))
-    status, body, err = http_json(base + "/v1/models", timeout=4.0)
-    served = None
-    if isinstance(body, dict) and body.get("data"):
-        served = body["data"][0].get("id")
-    if served:
-        results.extend(probe_chat(base + "/v1", served, deep, explicit))
+    results.append(Result(OK, "LM Studio server up", redact_url(base)))
+
+    # Unlike llama-server, LM Studio honours the model field, so requesting a
+    # model it has not loaded is a real 404 for the demo.
+    model, served = resolve_probe_model(env, body)
+    if served and model not in served:
+        results.append(Result(
+            FAIL if explicit else WARN, "OPENAI_COMPAT_MODEL is not loaded",
+            "The demo will request %r, but LM Studio serves: %s. LM Studio "
+            "honours the model field, so this 404s." % (model, ", ".join(served)),
+            ["lms load %s --context-length %d --parallel 1 --ttl 3600"
+             % (model, RECOMMENDED_CTX),
+             "# or set OPENAI_COMPAT_MODEL to one of the ids above"]))
+        return results
+
+    results.extend(probe_chat(base + "/v1", model, deep, explicit))
     return results
 
 
@@ -607,7 +680,7 @@ def probe_chat(v1_base: str, model: str, deep: bool,
     try:
         text = body["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError):
-        return [Result(FAIL, "Completion response malformed",
+        return [Result(FAIL if explicit else WARN, "Completion response malformed",
                        json.dumps(body)[:300])]
 
     results.append(Result(OK, "Completion round-trip",
@@ -867,6 +940,9 @@ def run_checks(provider: Optional[str], deep: bool) -> List[Result]:
 
     if provider in (None, "local", "llamacpp"):
         results.append(check_gguf(env, deep))
+    shape = check_base_url_shape(env)
+    if shape is not None:
+        results.append(shape)
     if provider in (None, "ollama"):
         results.extend(check_ollama(env, deep, explicit=provider == "ollama"))
     if provider in (None, "llama-server", "openai-compat"):
