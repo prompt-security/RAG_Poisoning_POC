@@ -42,6 +42,9 @@ jobs:
       # this job, so simply running it proves that.
       - name: Must run with no dependencies installed, and must not greenlight
         run: |
+          # GitHub invokes this as `bash -e`; these assertions deliberately run
+          # commands that exit non-zero, so clear -e and check $? explicitly.
+          set +e
           set -uo pipefail
 
           fail() { echo "::error::$1"; exit 1; }
@@ -87,6 +90,7 @@ jobs:
 
       - name: Help text renders and an unknown model is rejected
         run: |
+          set +e
           set -uo pipefail
           python src/preflight.py --help > /dev/null
 
