@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))
 
 import preflight  # noqa: E402
-from preflight import FAIL, OK, WARN  # noqa: E402
+from preflight import FAIL, INFO, OK, WARN  # noqa: E402
 
 
 def statuses(results, title):
@@ -438,7 +438,12 @@ class TestProbedModelMatchesTheDemo(unittest.TestCase):
             env = {"OPENAI_COMPAT_BASE_URL": stub.base,
                    "OPENAI_COMPAT_MODEL": "phi-4-mini-instruct"}
             results = preflight.check_llama_server(env, False, explicit=True)
-        self.assertFalse(has_fail(results))
+        # Assert on the mismatch handling specifically. A blanket "no failures"
+        # check would also depend on whether the llama-server BINARY is present,
+        # which differs between a dev machine and a bare CI runner.
+        self.assertEqual(statuses(results, "OPENAI_COMPAT_MODEL is not loaded"), [],
+                         "llama-server ignores the model field; must not be fatal")
+        self.assertIn(INFO, statuses(results, "Model name differs from the served id"))
         self.assertIn(OK, statuses(results, "Completion round-trip"))
 
 
