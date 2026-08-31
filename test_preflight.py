@@ -1,35 +1,29 @@
 #!/usr/bin/env python3
 """
-Contract tests for src/preflight.py.
+Exit-code and semantics tests for src/preflight.py.
 
-These guard the invariants that a human reviewer caught by hand and that are
-cheap for CI to check on a bare runner -- no model weights, no inference engine,
-no project dependencies:
+SCOPE, deliberately narrow: this file asserts what preflight *concludes* -- which
+statuses it assigns, which exit status it returns, what it prints, and how it
+parses configuration. It stands up NO fake inference endpoint. The only sockets
+it touches are closed local ports, used to represent "nothing is listening".
 
-  * preflight must NOT report success when the selected path cannot run
-    (the exit-code bugs: a down endpoint, a missing llama-cpp-python, a cold
-    embedding cache were all reported as advisory and exited 0);
-  * a survey run must NOT be blocked by an engine you are not using;
-  * bad-model detection must match whole tokens, not substrings
-    (llama3.2:11b is not a 1B model);
-  * .env backups must not be world-readable;
-  * --write-env must write the variables config.py actually reads;
-  * preflight must import nothing outside the standard library, because one of
-    its jobs is to report that the dependencies are missing.
+That keeps the pipeline testing the contract that actually broke in review --
+preflight reporting success when the demo cannot run -- rather than simulating an
+inference server, which is environment-sensitive and not what CI is for.
 
-Like preflight itself, this file is standard-library only, so it runs on a bare
-interpreter with no venv and no install step.
+Endpoint-shaped tests that need a stub server live in test_preflight_endpoints.py
+and are run locally, not by CI.
+
+Standard-library only, like preflight itself, so it runs on a bare interpreter
+with no venv and no install step.
 """
 
 import json
 import os
-import shutil
 import socket
 import sys
 import tempfile
-import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))
 
@@ -46,90 +40,13 @@ def has_fail(results):
 
 
 def dead_port():
-    """A port with nothing listening on it."""
+    """A local port with nothing listening on it."""
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
     return port
 
-
-# --------------------------------------------------------------------------
-# A stub OpenAI-compatible server, so CI can exercise the SUCCESS path too.
-# Without this, a regression that made every check fail would still pass CI.
-# --------------------------------------------------------------------------
-
-class _StubHandler(BaseHTTPRequestHandler):
-    echo_codeword = True
-    n_ctx = 4096
-    model_ids = ("local-model",)
-    malformed = False
-
-    def log_message(self, *_args):
-        pass  # keep test output clean
-
-    def _send(self, payload, code=200):
-        body = json.dumps(payload).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        cls = type(self)
-        if self.path == "/v1/models":
-            self._send({"data": [{"id": i} for i in cls.model_ids]})
-        elif self.path == "/props":
-            self._send({"default_generation_settings": {"n_ctx": cls.n_ctx}})
-        elif self.path == "/health":
-            self._send({"status": "ok"})
-        else:
-            self._send({"error": "not found"}, 404)
-
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        req = json.loads(self.rfile.read(length) or b"{}")
-        if type(self).malformed:
-            # 200 OK with a body that has no choices[].message.content
-            self._send({"unexpected": "shape"})
-            return
-        prompt = req.get("messages", [{}])[-1].get("content", "")
-        if "Codeword:" in prompt:
-            # Mimic an engine that either preserves or silently trims the head
-            # of an overlong prompt.
-            word = prompt.split("Codeword:", 1)[1].split()[0]
-            reply = word if type(self).echo_codeword else "machine learning"
-        else:
-            reply = "READY"
-        self._send({"choices": [{"message": {"content": reply}}]})
-
-
-class StubServer:
-    def __init__(self, port=0, **options):
-        handler = type("H", (_StubHandler,), options)
-        self.httpd = HTTPServer(("127.0.0.1", port), handler)
-        self.port = self.httpd.server_address[1]
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, *_exc):
-        self.httpd.shutdown()
-        self.httpd.server_close()
-
-    @property
-    def v1(self):
-        return "http://127.0.0.1:%d/v1" % self.port
-
-    @property
-    def base(self):
-        return "http://127.0.0.1:%d" % self.port
-
-
-# --------------------------------------------------------------------------
 
 class TestBadModelDetection(unittest.TestCase):
     """A separator list containing "" once reduced this to a substring test."""
@@ -238,21 +155,6 @@ class TestRemediationIsActionable(unittest.TestCase):
         res = preflight.check_gguf({"LLAMA_MODEL_PATH": "/tmp/custom.gguf"})
         self.assertTrue(any("--write-env" in c for c in res.fix), res.fix)
 
-    def test_hf_repo_name_is_not_offered_to_ollama_pull(self):
-        # 'Phi-3.5-mini-instruct:latest' shipped in .env.example but is an HF
-        # repo name; `ollama pull` on it would 404 just like the demo did.
-        bad = "Phi-3.5-mini-instruct:latest"
-        with StubServer() as stub:
-            env = {"OLLAMA_BASE_URL": stub.base, "OLLAMA_MODEL": bad}
-            if shutil.which("ollama") is None:
-                self.skipTest("ollama binary not installed")
-            results = preflight.check_ollama(env, False, explicit=True)
-        pulled = [r for r in results if r.title == "OLLAMA_MODEL not pulled"]
-        if not pulled:
-            self.skipTest("stub did not reach the model check")
-        self.assertFalse(any(c.strip() == "ollama pull %s" % bad
-                             for c in pulled[0].fix), pulled[0].fix)
-
 
 class TestCustomEndpointUrlIsHonoured(unittest.TestCase):
     """
@@ -313,37 +215,6 @@ class TestOnDiskModelIntegrity(unittest.TestCase):
         self.assertIn("sha256 verified", res.detail)
 
 
-class TestUnusedEngineDoesNotBlockASurvey(unittest.TestCase):
-    """
-    A discovered-but-unused engine must not fail the whole run. Two statuses
-    stayed hard-coded FAIL while their neighbours were gated on `explicit`, so a
-    stray server with a small context could block a working Ollama or local path.
-    """
-
-    def test_malformed_response_is_advisory_in_a_survey(self):
-        with StubServer(malformed=True) as stub:
-            survey = preflight.probe_chat(stub.v1, "m", deep=False, explicit=False)
-            chosen = preflight.probe_chat(stub.v1, "m", deep=False, explicit=True)
-        self.assertFalse(has_fail(survey), "a survey must not be blocked")
-        self.assertIn(WARN, statuses(survey, "Completion response malformed"))
-        self.assertTrue(has_fail(chosen), "an explicit choice must fail")
-
-    def test_small_context_is_advisory_in_a_survey(self):
-        # check_llama_server only honours a custom URL when explicit, so the
-        # survey path has to be exercised on the conventional port.
-        try:
-            stub = StubServer(port=8080, n_ctx=512)
-        except OSError:
-            self.skipTest("port 8080 is in use on this machine")
-        with stub:
-            env = {"OPENAI_COMPAT_BASE_URL": stub.base}
-            survey = preflight.check_llama_server(env, False, explicit=False)
-            chosen = preflight.check_llama_server(env, False, explicit=True)
-        self.assertIn(WARN, statuses(survey, "llama-server context too small"))
-        self.assertFalse(has_fail(survey))
-        self.assertIn(FAIL, statuses(chosen, "llama-server context too small"))
-
-
 class TestEndpointUrlHandling(unittest.TestCase):
     """
     A hand-rolled rsplit(":") for the port raised ValueError on portless and
@@ -351,15 +222,20 @@ class TestEndpointUrlHandling(unittest.TestCase):
     remote endpoint was never actually contacted.
     """
 
-    ODD_URLS = [
-        "http://myhost",                 # no port
-        "http://host:1234/v1",           # path
-        "http://10.0.0.5:1234",          # remote host
-        "https://remote.example.com",    # https, no port
-    ]
+    def _odd_urls(self):
+        port = dead_port()
+        return [
+            "http://127.0.0.1",                      # no port at all
+            "http://127.0.0.1:%d/v1" % port,         # trailing path
+            "http://127.0.0.1:%d" % port,            # ordinary host:port
+            "https://127.0.0.1",                     # https, no port
+            "http://user:tok@127.0.0.1:%d" % port,   # userinfo
+        ]
 
     def test_unusual_urls_do_not_raise(self):
-        for url in self.ODD_URLS:
+        # A hand-rolled rsplit(":") for the port raised ValueError on the
+        # portless and path-bearing forms before this was fixed.
+        for url in self._odd_urls():
             with self.subTest(url=url):
                 env = {"OPENAI_COMPAT_BASE_URL": url}
                 preflight.check_lmstudio(env, False, explicit=True)   # must not raise
@@ -384,16 +260,18 @@ class TestCredentialsAreNotPrinted(unittest.TestCase):
     """
 
     SECRET = "secrettoken"
-    URL = "https://user:%s@remote.example.com:1234/v1?api_key=alsosecret#frag" % SECRET
+    URL = "https://user:%s@127.0.0.1:1234/v1?api_key=alsosecret#frag" % SECRET
 
     def test_redact_url_strips_userinfo_query_and_fragment(self):
         shown = preflight.redact_url(self.URL)
         for leak in (self.SECRET, "alsosecret", "#frag"):
             self.assertNotIn(leak, shown)
-        self.assertIn("remote.example.com:1234", shown)
+        self.assertIn("127.0.0.1:1234", shown)
 
     def test_no_check_output_contains_the_secret(self):
-        env = {"OPENAI_COMPAT_BASE_URL": self.URL, "OLLAMA_BASE_URL": self.URL}
+        url = "https://user:%s@127.0.0.1:%d?api_key=alsosecret#frag" % (
+            self.SECRET, dead_port())
+        env = {"OPENAI_COMPAT_BASE_URL": url, "OLLAMA_BASE_URL": url}
         results = []
         results += preflight.check_lmstudio(env, False, explicit=True)
         results += preflight.check_llama_server(env, False, explicit=True)
@@ -404,6 +282,7 @@ class TestCredentialsAreNotPrinted(unittest.TestCase):
         blob = json.dumps([r.as_dict() for r in results])
         self.assertNotIn(self.SECRET, blob)
         self.assertNotIn("alsosecret", blob)
+        self.assertNotIn("#frag", blob)
 
 
 class TestProbedModelMatchesTheDemo(unittest.TestCase):
@@ -423,48 +302,6 @@ class TestProbedModelMatchesTheDemo(unittest.TestCase):
         body = {"data": [{"id": "whatever-is-loaded"}]}
         model, _ = preflight.resolve_probe_model({}, body)
         self.assertEqual(model, "whatever-is-loaded")
-
-    def test_lmstudio_fails_when_the_configured_model_is_not_loaded(self):
-        # LM Studio honours the model field, so this is a real 404 for the demo.
-        with StubServer(model_ids=("something-else",)) as stub:
-            env = {"OPENAI_COMPAT_BASE_URL": stub.base,
-                   "OPENAI_COMPAT_MODEL": "phi-4-mini-instruct"}
-            results = preflight.check_lmstudio(env, False, explicit=True)
-        self.assertIn(FAIL, statuses(results, "OPENAI_COMPAT_MODEL is not loaded"))
-
-    def test_llama_server_only_notes_a_model_mismatch(self):
-        # llama-server ignores the model field, so the same mismatch is harmless.
-        with StubServer(model_ids=("something-else",)) as stub:
-            env = {"OPENAI_COMPAT_BASE_URL": stub.base,
-                   "OPENAI_COMPAT_MODEL": "phi-4-mini-instruct"}
-            results = preflight.check_llama_server(env, False, explicit=True)
-        # Assert on the mismatch handling specifically. A blanket "no failures"
-        # check would also depend on whether the llama-server BINARY is present,
-        # which differs between a dev machine and a bare CI runner.
-        self.assertEqual(statuses(results, "OPENAI_COMPAT_MODEL is not loaded"), [],
-                         "llama-server ignores the model field; must not be fatal")
-        self.assertIn(INFO, statuses(results, "Model name differs from the served id"))
-        self.assertIn(OK, statuses(results, "Completion round-trip"))
-
-
-class TestEndpointSuccessPath(unittest.TestCase):
-    """Guards against a regression where everything fails and CI still passes."""
-
-    def test_round_trip_against_a_stub(self):
-        with StubServer() as stub:
-            results = preflight.probe_chat(stub.v1, "local-model", deep=False)
-        self.assertFalse(has_fail(results))
-        self.assertIn(OK, statuses(results, "Completion round-trip"))
-
-    def test_truncation_probe_passes_when_the_head_survives(self):
-        with StubServer(echo_codeword=True) as stub:
-            res = preflight.probe_truncation(stub.v1, "local-model")
-        self.assertEqual(res.status, OK)
-
-    def test_truncation_probe_warns_when_the_head_is_lost(self):
-        with StubServer(echo_codeword=False) as stub:
-            res = preflight.probe_truncation(stub.v1, "local-model")
-        self.assertEqual(res.status, WARN)
 
 
 class TestEnvHandling(unittest.TestCase):

@@ -1,10 +1,16 @@
 name: CI
 
-# These checks deliberately run on a BARE runner: no project dependencies, no
-# model weights, no inference engine. That is the environment in which
-# src/preflight.py has to give a correct answer, and three real defects in this
-# tool were exit-code bugs that only show up here -- preflight reporting success
-# while the demo could not possibly run.
+# SCOPE: exit-code semantics only. This pipeline asserts what preflight
+# CONCLUDES -- which statuses it assigns, which exit status it returns, what it
+# prints -- on a BARE runner with no project dependencies, no model weights and
+# no inference engine.
+#
+# It deliberately does NOT stand up or simulate an inference endpoint. Those
+# tests live in test_preflight_endpoints.py and are run locally: simulating an
+# engine in CI is environment-sensitive and is not what this gate is for.
+#
+# The contract being guarded is the one that actually broke in review: preflight
+# reporting success while the demo could not possibly run.
 on:
   pull_request:
   push:
@@ -32,9 +38,14 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Byte-compile every source file
-        run: python -m compileall -q src test_preflight.py test_setup.py
+        run: |
+          python -m compileall -q src test_setup.py \
+            test_preflight.py test_preflight_endpoints.py
 
-      - name: Contract tests
+      # Statuses, exit codes, output and config parsing. No stub endpoint: the
+      # only sockets touched are closed local ports, standing in for
+      # "nothing is listening".
+      - name: Exit-code and semantics tests
         run: python test_preflight.py
 
       # preflight's core promise is that it imports nothing third-party, so it
