@@ -304,6 +304,108 @@ class TestProbedModelMatchesTheDemo(unittest.TestCase):
         self.assertEqual(model, "whatever-is-loaded")
 
 
+class TestMalformedInputDoesNotCrash(unittest.TestCase):
+    """
+    preflight must always reach a verdict. A traceback is worse than a FAIL: it
+    tells the user nothing and, for --one-line, replaces the roster line they
+    were told to paste with a stack trace.
+    """
+
+    def test_unparseable_port_is_reported_not_raised(self):
+        # urlsplit is lazy -- .port is what raises, so it must be inside the guard.
+        self.assertEqual(preflight.redact_url("http://host:bad"), "(unparseable URL)")
+
+    def test_unparseable_base_url_is_reported_not_raised(self):
+        res = preflight.check_base_url_shape({"OPENAI_COMPAT_BASE_URL": "http://h:bad"})
+        self.assertIsNotNone(res)
+        self.assertEqual(res.status, WARN)
+
+    def test_non_object_config_json_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = os.path.join(tmp, "models--a--b", "snapshot")
+            os.makedirs(snap)
+            with open(os.path.join(snap, "config.json"), "w") as fh:
+                fh.write('["not", "an", "object"]')
+            self.assertIsNone(
+                preflight.embedding_dim({"SENTENCE_TRANSFORMERS_HOME": tmp}))
+
+    def test_json_objects_tolerates_every_wrong_shape(self):
+        for body in ("plain text", None, 42, [], {"data": "str"},
+                     {"data": ["a", 1]}, {"data": [{"id": "ok"}]}):
+            with self.subTest(body=body):
+                out = preflight.json_objects(body, "data")
+                self.assertIsInstance(out, list)
+        self.assertEqual(preflight.json_objects({"data": [{"id": "ok"}]}, "data"),
+                         [{"id": "ok"}])
+
+    def test_completion_text_returns_none_for_a_null_content(self):
+        # A tool-call response legitimately carries content: null.
+        for body in ({"choices": [{"message": {"content": None}}]},
+                     {"choices": [{"message": {}}]},
+                     {"choices": []},
+                     {"choices": [{"message": {"content": 5}}]},
+                     "plain text", None):
+            with self.subTest(body=body):
+                self.assertIsNone(preflight.completion_text(body))
+        self.assertEqual(
+            preflight.completion_text({"choices": [{"message": {"content": "hi"}}]}),
+            "hi")
+
+
+class TestNextStepMatchesTheVerifiedPath(unittest.TestCase):
+    """
+    `python3 src/rag_poisoning_demo.py` with no --infer selects provider=None and
+    builds LlamaCpp, so recommending it on an endpoint-only machine is advice
+    that fails immediately.
+    """
+
+    def test_local_path_gets_the_bare_command(self):
+        results = [preflight.Result(OK, "llama-cpp-python"),
+                   preflight.Result(OK, "Local GGUF")]
+        self.assertEqual(preflight.next_step(results),
+                         "python3 src/rag_poisoning_demo.py")
+
+    def test_endpoint_only_path_names_the_provider(self):
+        results = [preflight.Result(WARN, "llama-cpp-python"),
+                   preflight.Result(OK, "Completion round-trip", "0.1s",
+                                    provider="openai-compat")]
+        self.assertEqual(preflight.next_step(results),
+                         "python3 src/rag_poisoning_demo.py --infer openai-compat")
+
+    def test_ollama_path_names_ollama(self):
+        results = [preflight.Result(OK, "Completion round-trip", "0.1s",
+                                    provider="ollama")]
+        self.assertEqual(preflight.next_step(results),
+                         "python3 src/rag_poisoning_demo.py --infer ollama")
+
+    def test_no_verified_path_recommends_nothing(self):
+        self.assertIsNone(preflight.next_step([preflight.Result(FAIL, "anything")]))
+
+
+class TestRuntimeCredentialsAreReused(unittest.TestCase):
+    """
+    The runtime reads .keys via Config._load_api_keys, so preflight must see the
+    same credentials or it reports a working authenticated endpoint as broken.
+    """
+
+    def test_keys_file_is_parsed_like_config_does(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, ".keys")
+            with open(path, "w") as fh:
+                fh.write('# comment\nOPENAI_COMPAT_API_KEY="sekret"\nOTHER=plain\n')
+            keys = preflight.load_keys(path)
+        self.assertEqual(keys["OPENAI_COMPAT_API_KEY"], "sekret")
+        self.assertEqual(keys["OTHER"], "plain")
+
+    def test_missing_keys_file_is_not_an_error(self):
+        self.assertEqual(preflight.load_keys("/nonexistent/.keys"), {})
+
+    def test_dummy_placeholder_is_not_treated_as_a_token(self):
+        self.assertIsNone(preflight.endpoint_token({}))
+        self.assertEqual(
+            preflight.endpoint_token({"OPENAI_COMPAT_API_KEY": "sekret"}), "sekret")
+
+
 class TestEnvHandling(unittest.TestCase):
     def test_write_env_sets_the_variables_config_py_reads(self):
         with tempfile.TemporaryDirectory() as tmp:

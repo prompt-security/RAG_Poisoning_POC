@@ -168,10 +168,14 @@ class Result:
     title: str
     detail: str = ""
     fix: List[str] = field(default_factory=list)
+    # Which --infer value this result belongs to, when it proves a usable path.
+    # report() needs it to print a next step that actually works.
+    provider: Optional[str] = None
 
     def as_dict(self):
         return {"status": self.status, "title": self.title,
-                "detail": self.detail, "fix": self.fix}
+                "detail": self.detail, "fix": self.fix,
+                "provider": self.provider}
 
 
 # --------------------------------------------------------------------------
@@ -205,10 +209,15 @@ def load_env(path: str = ".env") -> Dict[str, str]:
     return env
 
 
-def http_json(url: str, payload: Optional[dict] = None, timeout: float = 10.0):
+def http_json(url: str, payload: Optional[dict] = None, timeout: float = 10.0,
+              token: Optional[str] = None):
     """GET or POST JSON. Returns (status_code, parsed_body_or_text, error)."""
     data = None
     headers = {"Accept": "application/json"}
+    # Mirror what ChatOpenAI sends, so an authenticated endpoint that works at
+    # runtime is not reported as broken. Never echoed into any Result.
+    if token and token != "dummy-key":
+        headers["Authorization"] = "Bearer %s" % token
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -238,19 +247,37 @@ def redact_url(url: str) -> str:
     into a shared thread, so a token embedded in the endpoint URL must not travel
     with it. The raw value is still used for probing.
     """
+    # urlsplit is lazy: .port and .hostname are what actually raise on a
+    # malformed authority, so they must be inside the guard too.
     try:
         parts = urllib.parse.urlsplit(url)
+        netloc = parts.hostname or ""
+        if parts.port:
+            netloc += ":%d" % parts.port
+        username = parts.username
     except ValueError:
         return "(unparseable URL)"
-    netloc = parts.hostname or ""
-    if parts.port:
-        netloc += ":%d" % parts.port
-    if parts.username:
+    if username:
         netloc = "***@" + netloc
     shown = urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, "", ""))
     if parts.query or parts.fragment:
         shown += " (query redacted)"
     return shown or "(empty URL)"
+
+
+def json_objects(body, key: str) -> List[dict]:
+    """
+    The mapping elements of body[key], defensively.
+
+    An endpoint can answer 200 with plain text or an unexpected shape; every
+    caller here wants "the list of objects, or nothing".
+    """
+    if not isinstance(body, dict):
+        return []
+    items = body.get(key)
+    if not isinstance(items, list):
+        return []
+    return [i for i in items if isinstance(i, dict)]
 
 
 def resolve_probe_model(env: Dict[str, str], body, fallback: str = "local-model"):
@@ -261,10 +288,8 @@ def resolve_probe_model(env: Dict[str, str], body, fallback: str = "local-model"
     whatever /v1/models happens to list first can pass while the demo 404s on a
     model that is not loaded.
     """
-    served: List[str] = []
-    if isinstance(body, dict) and isinstance(body.get("data"), list):
-        served = [m.get("id") for m in body["data"]
-                  if isinstance(m, dict) and m.get("id")]
+    served = [m["id"] for m in json_objects(body, "data")
+              if isinstance(m.get("id"), str) and m["id"]]
     configured = (env.get("OPENAI_COMPAT_MODEL") or "").strip()
     if configured:
         return configured, served
@@ -279,7 +304,16 @@ def check_base_url_shape(env: Dict[str, str]) -> Optional[Result]:
     raw = (env.get("OPENAI_COMPAT_BASE_URL") or "").strip()
     if not raw:
         return None
-    path = urllib.parse.urlsplit(raw).path.rstrip("/")
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        parts.port          # lazy: this is the attribute that validates the port
+        path = parts.path.rstrip("/")
+    except ValueError:
+        return Result(
+            WARN, "OPENAI_COMPAT_BASE_URL is unparseable",
+            "%r is not a usable URL, so the endpoint can never be reached."
+            % redact_url(raw),
+            ["OPENAI_COMPAT_BASE_URL=http://localhost:8080"])
     if path:
         return Result(
             WARN, "OPENAI_COMPAT_BASE_URL is not a bare origin",
@@ -397,11 +431,12 @@ def embedding_dim(env: Dict[str, str]) -> Optional[int]:
         if "config.json" in files:
             try:
                 with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
-                    dim = json.load(fh).get("hidden_size")
-                if isinstance(dim, int):
-                    return dim
+                    blob = json.load(fh)
             except (ValueError, OSError):
                 continue
+            # A cache entry can hold any JSON, not necessarily an object.
+            if isinstance(blob, dict) and isinstance(blob.get("hidden_size"), int):
+                return blob["hidden_size"]
     return None
 
 
@@ -501,7 +536,8 @@ def check_ollama(env: Dict[str, str], deep: bool,
             ["ollama serve  # leave this running in another terminal"]))
         return results
 
-    tags = [m.get("name", "") for m in (body or {}).get("models", [])]
+    tags = [m["name"] for m in json_objects(body, "models")
+            if isinstance(m.get("name"), str) and m["name"]]
     results.append(Result(OK, "ollama daemon up",
                           "%d model(s) pulled" % len(tags)))
 
@@ -552,7 +588,8 @@ def check_ollama(env: Dict[str, str], deep: bool,
     # Probing a model that is not pulled would just surface a second, noisier
     # copy of the same 404 we already reported above.
     if model_pulled:
-        results.extend(probe_chat(base + "/v1", model, deep, explicit))
+        results.extend(probe_chat(base + "/v1", model, deep, explicit,
+                                  provider="ollama"))
     return results
 
 
@@ -560,18 +597,23 @@ def check_llama_server(env: Dict[str, str], deep: bool,
                        explicit: bool = False) -> List[Result]:
     results: List[Result] = []
     base = compat_base(env, "llama-server", explicit)
+    token = endpoint_token(env)
 
-    if shutil.which("llama-server") is None:
-        results.append(Result(FAIL if explicit else WARN, "llama-server not installed",
-                              "The most forgiving option for a live room: it ignores "
-                              "the model field and fails LOUDLY on context overflow.",
-                              install_fix("llama-server")))
-    else:
-        results.append(Result(OK, "llama-server installed", shutil.which("llama-server")))
-
-    status, body, err = http_json(base + "/v1/models", timeout=4.0)
+    # Probe FIRST. A reachable endpoint is sufficient on its own -- it may be a
+    # shared or remote server, in which case a local binary is irrelevant.
+    status, body, err = http_json(base + "/v1/models", timeout=4.0, token=token)
     if status is None:
-        spec = UNGATED_MODELS["phi-4-mini"]
+        if shutil.which("llama-server") is None:
+            results.append(Result(
+                FAIL if explicit else WARN, "llama-server not installed",
+                "Nothing is answering at %s and there is no local binary to "
+                "start. It is the most forgiving option for a live room: it "
+                "ignores the model field and fails LOUDLY on context overflow."
+                % redact_url(base),
+                install_fix("llama-server")))
+            return results
+        results.append(Result(OK, "llama-server installed",
+                              shutil.which("llama-server")))
         results.append(Result(
             FAIL if explicit else INFO, "llama-server not running",
             "%s -- %s" % (redact_url(base), err),
@@ -586,11 +628,13 @@ def check_llama_server(env: Dict[str, str], deep: bool,
     results.append(Result(OK, "llama-server responding", redact_url(base)))
 
     # /props is authoritative for the real context size.
-    status, props, err = http_json(base + "/props", timeout=4.0)
+    status, props, err = http_json(base + "/props", timeout=4.0, token=token)
     n_ctx = None
     if isinstance(props, dict):
-        n_ctx = (props.get("default_generation_settings", {}) or {}).get("n_ctx")
-        if n_ctx is None:
+        settings = props.get("default_generation_settings")
+        if isinstance(settings, dict):
+            n_ctx = settings.get("n_ctx")
+        if not isinstance(n_ctx, int):
             n_ctx = props.get("n_ctx")
     if isinstance(n_ctx, int):
         if n_ctx < MIN_CTX:
@@ -610,7 +654,8 @@ def check_llama_server(env: Dict[str, str], deep: bool,
             INFO, "Model name differs from the served id",
             "Requesting %r while the server lists %s. llama-server ignores the "
             "model field, so this is harmless here." % (model, ", ".join(served))))
-    results.extend(probe_chat(base + "/v1", model, deep, explicit))
+    results.extend(probe_chat(base + "/v1", model, deep, explicit,
+                              provider="openai-compat", token=token))
     return results
 
 
@@ -618,15 +663,19 @@ def check_lmstudio(env: Dict[str, str], deep: bool,
                    explicit: bool = False) -> List[Result]:
     results: List[Result] = []
     base = compat_base(env, "lmstudio", explicit)
-    if shutil.which("lms") is None:
-        results.append(Result(FAIL if explicit else INFO,
-                              "LM Studio CLI not installed", "",
-                              install_fix("lmstudio")))
-    else:
-        results.append(Result(OK, "LM Studio CLI installed", shutil.which("lms")))
+    token = endpoint_token(env)
 
-    status, body, err = http_json(base + "/v1/models", timeout=4.0)
+    # Probe first: a reachable endpoint needs no local CLI (it may be remote).
+    status, body, err = http_json(base + "/v1/models", timeout=4.0, token=token)
     if status is None:
+        if shutil.which("lms") is None:
+            results.append(Result(FAIL if explicit else INFO,
+                                  "LM Studio CLI not installed",
+                                  "Nothing is answering at %s and there is no "
+                                  "local CLI to start it." % redact_url(base),
+                                  install_fix("lmstudio")))
+            return results
+        results.append(Result(OK, "LM Studio CLI installed", shutil.which("lms")))
         results.append(Result(
             FAIL if explicit else INFO, "LM Studio server not running",
             "%s -- %s. Its server is OFF by default and models JIT-load with a "
@@ -650,12 +699,31 @@ def check_lmstudio(env: Dict[str, str], deep: bool,
              "# or set OPENAI_COMPAT_MODEL to one of the ids above"]))
         return results
 
-    results.extend(probe_chat(base + "/v1", model, deep, explicit))
+    results.extend(probe_chat(base + "/v1", model, deep, explicit,
+                              provider="openai-compat", token=token))
     return results
 
 
+def completion_text(body) -> Optional[str]:
+    """
+    The assistant text from an OpenAI-shaped completion, or None.
+
+    content is legitimately null for a tool-call response, and the whole body may
+    not be an object at all, so every hop is checked rather than assumed.
+    """
+    choices = json_objects(body, "choices")
+    if not choices:
+        return None
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    return content if isinstance(content, str) else None
+
+
 def probe_chat(v1_base: str, model: str, deep: bool,
-               explicit: bool = True) -> List[Result]:
+               explicit: bool = True, provider: Optional[str] = None,
+               token: Optional[str] = None) -> List[Result]:
     """Round-trip a real completion, then optionally probe for silent truncation."""
     import time
     results: List[Result] = []
@@ -665,7 +733,7 @@ def probe_chat(v1_base: str, model: str, deep: bool,
         {"model": model, "temperature": 0,
          "max_tokens": 8,
          "messages": [{"role": "user", "content": "Reply with exactly: READY"}]},
-        timeout=90.0)
+        timeout=90.0, token=token)
     elapsed = time.time() - started
 
     if status is None:
@@ -676,25 +744,27 @@ def probe_chat(v1_base: str, model: str, deep: bool,
         return [Result(FAIL if explicit else WARN,
                        "Completion returned HTTP %d" % status, snippet)]
 
-    text = ""
-    try:
-        text = body["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError):
+    text = completion_text(body)
+    if text is None:
         return [Result(FAIL if explicit else WARN, "Completion response malformed",
-                       json.dumps(body)[:300])]
+                       "No string content in choices[0].message: %s"
+                       % json.dumps(body)[:240])]
+    text = text.strip()
 
     results.append(Result(OK, "Completion round-trip",
-                          "%.1fs, model=%r, said %r" % (elapsed, model, text[:40])))
+                          "%.1fs, model=%r, said %r" % (elapsed, model, text[:40]),
+                          provider=provider))
     if elapsed > 20:
         results.append(Result(WARN, "Endpoint is slow",
                               "%.1fs for 8 tokens. A 25-slide live demo will drag." % elapsed))
 
     if deep:
-        results.append(probe_truncation(v1_base, model))
+        results.append(probe_truncation(v1_base, model, token=token))
     return results
 
 
-def probe_truncation(v1_base: str, model: str) -> Result:
+def probe_truncation(v1_base: str, model: str,
+                    token: Optional[str] = None) -> Result:
     """
     Detect SILENT prompt truncation.
 
@@ -711,7 +781,7 @@ def probe_truncation(v1_base: str, model: str) -> Result:
         v1_base + "/chat/completions",
         {"model": model, "temperature": 0, "max_tokens": 16,
          "messages": [{"role": "user", "content": prompt}]},
-        timeout=120.0)
+        timeout=120.0, token=token)
 
     if status is None:
         return Result(WARN, "Truncation probe inconclusive", str(err))
@@ -720,10 +790,10 @@ def probe_truncation(v1_base: str, model: str) -> Result:
         return Result(OK, "Context overflow fails LOUDLY (good)",
                       "HTTP %d: %s -- you will see the problem instead of "
                       "debugging a silently broken demo." % (status, snippet))
-    try:
-        text = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        return Result(WARN, "Truncation probe inconclusive", "malformed response")
+    text = completion_text(body)
+    if text is None:
+        return Result(WARN, "Truncation probe inconclusive",
+                      "no string content in the response")
 
     if codeword in text.upper():
         return Result(OK, "No silent truncation",
@@ -897,6 +967,24 @@ def do_write_env(provider: str, model_key: Optional[str], path: str = ".env") ->
 # Reporting
 # --------------------------------------------------------------------------
 
+def next_step(results: List[Result]) -> Optional[str]:
+    """
+    The demo invocation that the verified path actually supports.
+
+    `python3 src/rag_poisoning_demo.py` with no --infer selects provider=None and
+    builds LlamaCpp, so recommending it on an endpoint-only machine is wrong.
+    """
+    def ok(title):
+        return any(r.title == title and r.status == OK for r in results)
+
+    if ok("llama-cpp-python") and ok("Local GGUF"):
+        return "python3 src/rag_poisoning_demo.py"
+    for res in results:
+        if res.title == "Completion round-trip" and res.status == OK and res.provider:
+            return "python3 src/rag_poisoning_demo.py --infer %s" % res.provider
+    return None
+
+
 def check_viable_path(results: List[Result]) -> Optional[Result]:
     """
     Generalises the false-success findings: a survey run must not claim success
@@ -920,9 +1008,38 @@ def check_viable_path(results: List[Result]) -> Optional[Result]:
          "# or start one: llama-server -hf bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M -c 4096 -np 1 --port 8080"])
 
 
+def load_keys(path: str = ".keys") -> Dict[str, str]:
+    """
+    Read the repo's .keys file, the way Config._load_api_keys does.
+
+    Without this, preflight cannot see OPENAI_COMPAT_API_KEY and reports an
+    authenticated endpoint as unreachable while the demo talks to it happily.
+    """
+    keys: Dict[str, str] = {}
+    if not os.path.exists(path):
+        return keys
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                keys[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return keys
+
+
+def endpoint_token(env: Dict[str, str]) -> Optional[str]:
+    """The bearer token llm_factory would use for an OpenAI-compatible endpoint."""
+    return env.get("OPENAI_COMPAT_API_KEY") or None
+
+
 def resolve_env() -> Dict[str, str]:
-    """.env as the base, with the real environment winning (python-dotenv order)."""
+    """.env as the base, then .keys, with the real environment winning."""
     env = dict(load_env())
+    env.update(load_keys())
     # Overlay the whole environment: the previous version only replaced keys that
     # already existed in .env, so `OPENAI_COMPAT_BASE_URL=... python preflight.py`
     # was silently ignored when .env did not mention it.
@@ -975,10 +1092,16 @@ def report(results: List[Result]) -> int:
         print("%d blocking problem(s), %d warning(s)." % (fails, warns))
         print("Fix the FAIL lines above, then re-run.")
         return 1
+    command = next_step(results)
     if warns:
         print("No blocking problems, %d warning(s) -- the demo should run." % warns)
+        if command:
+            print("Run: %s" % command)
         return 0
-    print("All checks passed. Run: python3 src/rag_poisoning_demo.py")
+    if command:
+        print("All checks passed. Run: %s" % command)
+    else:
+        print("All checks passed.")
     return 0
 
 
@@ -1015,6 +1138,10 @@ def report_one_line(results: List[Result], env: Dict[str, str]) -> int:
         said = fired.detail.split("said ")[-1] if "said " in fired.detail else "ok"
         parts.append("model fired: %s" % said)
 
+    command = next_step(results)
+    if command:
+        parts.append("run: %s" % command.replace("python3 src/rag_poisoning_demo.py",
+                                                 "demo").strip())
     print("PREFLIGHT PASS: " + " | ".join(parts))
     return 0
 
