@@ -4,9 +4,14 @@ Endpoint-shaped tests for src/preflight.py, using a stub OpenAI-compatible serve
 
 NOT run by CI. The pipeline asserts exit-code semantics only (see
 test_preflight.py); simulating an inference engine there is environment-sensitive
-and outside what CI is for. Run this locally when changing endpoint handling:
+and outside what CI is for. Nothing invokes this file automatically -- run it
+locally when changing endpoint handling:
 
     python3 test_preflight_endpoints.py
+
+or, to run it together with the semantics suite:
+
+    python3 -m unittest discover -p "test_preflight*.py"
 
 It covers the things a bare-runner suite cannot: that the SUCCESS path works at
 all (without it, a regression making every check fail would still look green),

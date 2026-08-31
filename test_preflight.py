@@ -12,7 +12,14 @@ preflight reporting success when the demo cannot run -- rather than simulating a
 inference server, which is environment-sensitive and not what CI is for.
 
 Endpoint-shaped tests that need a stub server live in test_preflight_endpoints.py
-and are run locally, not by CI.
+and are run locally, not by CI. To run this file alone:
+
+    python3 test_preflight.py
+
+To run both suites in one go (test_setup.py is excluded deliberately -- it is a
+standalone script, not a unittest module, and cannot be imported by the loader):
+
+    python3 -m unittest discover -p "test_preflight*.py"
 
 Standard-library only, like preflight itself, so it runs on a bare interpreter
 with no venv and no install step.
@@ -433,6 +440,7 @@ class TestStdlibOnly(unittest.TestCase):
         offenders = sorted(
             name.split(".")[0] for name in list(sys.modules)
             if not name.startswith("_")
+            and not name.startswith("test_")   # the harness itself, under discover
             and name.split(".")[0] not in allowed
             and "." not in name)
         self.assertEqual(offenders, [], "third-party modules loaded: %s" % offenders)
