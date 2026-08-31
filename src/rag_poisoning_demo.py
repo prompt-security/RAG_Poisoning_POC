@@ -62,12 +62,15 @@ class RAGPoisoningDemo:
 def main():
     """Main execution function"""
     parser = argparse.ArgumentParser(description="RAG Poisoning Demo")
-    parser.add_argument('--infer', choices=['cpu', 'cuda', 'darwin', 'ollama', 'deepseek'], default=None,
-                        help="Force inference device/provider: cpu, cuda, darwin (macOS MPS), ollama, or deepseek")
+    parser.add_argument('--infer',
+                        choices=['cpu', 'cuda', 'darwin', 'ollama', 'openai-compat', 'deepseek'],
+                        default=None,
+                        help="Force inference device/provider: cpu, cuda, darwin (macOS MPS), "
+                             "ollama, openai-compat (llama-server / LM Studio), or deepseek")
     args = parser.parse_args()
     
     # Handle different inference options
-    if args.infer in ['ollama', 'deepseek']:
+    if args.infer in ['ollama', 'openai-compat', 'deepseek']:
         device = None 
         provider = args.infer
     else:

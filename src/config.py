@@ -87,7 +87,17 @@ class Config:
     
     @property
     def ollama_model(self):
-        return os.getenv('OLLAMA_MODEL', 'llama2')
+        return os.getenv('OLLAMA_MODEL', 'phi4-mini')
+
+    @property
+    def openai_compat_base_url(self):
+        """Bare origin of any OpenAI-compatible server (no /v1 suffix)."""
+        return os.getenv('OPENAI_COMPAT_BASE_URL', 'http://localhost:8080')
+
+    @property
+    def openai_compat_model(self):
+        # llama-server ignores this field; LM Studio needs the loaded model id.
+        return os.getenv('OPENAI_COMPAT_MODEL', 'local-model')
     
     @property
     def deepseek_model(self):
@@ -113,6 +123,10 @@ class Config:
             print(f"  • LLM Provider: Ollama")
             print(f"  • Ollama Base URL: {self.ollama_base_url}")
             print(f"  • Ollama Model: {self.ollama_model}")
+        elif provider == 'openai-compat':
+            print(f"  • LLM Provider: OpenAI-compatible endpoint")
+            print(f"  • Base URL: {self.openai_compat_base_url}")
+            print(f"  • Model: {self.openai_compat_model}")
         elif provider == 'deepseek':
             print(f"  • LLM Provider: DeepSeek")
             print(f"  • DeepSeek Model: {self.deepseek_model}")
