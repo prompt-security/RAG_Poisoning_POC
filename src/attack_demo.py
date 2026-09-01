@@ -5,7 +5,7 @@ Attack demo runner and analysis
 import re
 import time
 import logging
-from typing import List
+from typing import List, Optional
 
 from rag_system import AttackResult
 
@@ -18,7 +18,7 @@ class AttackDemo:
     def __init__(self, rag_system):
         self.rag_system = rag_system
     
-    def test_queries(self) -> List[AttackResult]:
+    def test_queries(self, show_prompt: bool = False) -> List[AttackResult]:
         """Run test queries and collect results"""
         test_queries = [
             "How do distributed systems handle load balancing?",
@@ -64,33 +64,38 @@ class AttackDemo:
             print(f"   {status} - Response time: {result.timestamp:.2f}s")
             print(f"   Sources: {', '.join(source_docs)}")
             print(f"   Response: {result.response}")
+            if show_prompt:
+                source_documents = response.get("source_documents", [])
+                print(f"\n   --- Assembled prompt ---")
+                print(self.rag_system.format_prompt(query, source_documents))
+                print(f"   ------------------------")
             print()
         
         return results
     
-    def run_attack_demo(self):
+    def run_attack_demo(self, show_prompt: bool = False, payload: Optional[str] = None):
         """Execute the complete attack demonstration"""
         logger.info("🦜 Starting RAG Poisoning Attack Demo: The Hidden Parrot")
         print("🦜 Starting RAG Poisoning Attack Demo: The Hidden Parrot")
         print("=" * 60)
-        
+
         # Phase 1: Test clean system
         print("\n📍 PHASE 1: Testing clean RAG system")
         self.rag_system.setup_vector_database(include_poison=False)
-        
+
         # Update retrieval chain
         self.rag_system.refresh_chain()
-        
-        clean_results = self.test_queries()
-        
+
+        clean_results = self.test_queries(show_prompt=show_prompt)
+
         # Phase 2: Test poisoned system
         print("\n📍 PHASE 2: Testing poisoned RAG system")
-        self.rag_system.setup_vector_database(include_poison=True)
-        
+        self.rag_system.setup_vector_database(include_poison=True, payload=payload)
+
         # Update retrieval chain
         self.rag_system.refresh_chain()
-        
-        poisoned_results = self.test_queries()
+
+        poisoned_results = self.test_queries(show_prompt=show_prompt)
         
         # Analysis
         self._analyze_results(clean_results, poisoned_results)

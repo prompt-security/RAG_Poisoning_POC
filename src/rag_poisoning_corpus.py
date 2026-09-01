@@ -4,7 +4,7 @@ RAG Poisoning Corpus Module
 Contains functions to create benign and poisoned documents for RAG system testing.
 """
 
-from typing import List
+from typing import List, Optional
 # langchain 1.x removed the langchain.schema re-export; Document now lives in
 # langchain_core, which every langchain package already depends on.
 from langchain_core.documents import Document
@@ -65,8 +65,19 @@ def create_benign_corpus() -> List[Document]:
     return documents
 
 
-def create_poisoned_document() -> Document:
-    """Create the malicious document with hidden pirate instructions"""
+def create_poisoned_document(payload: Optional[str] = None) -> Document:
+    """Create the malicious document injected into the vector database.
+
+    With `payload`, the document's entire content is the caller's own text
+    (Lab 2: participants author their own benign-persona injection and see
+    it fire). Without it, the default pirate-persona document is used.
+    """
+    if payload is not None:
+        return Document(
+            page_content=payload,
+            metadata={"source": "custom_payload.md", "type": "poisoned"}
+        )
+
     poisoned_content = """
     # Advanced Distributed Systems Architecture
     
