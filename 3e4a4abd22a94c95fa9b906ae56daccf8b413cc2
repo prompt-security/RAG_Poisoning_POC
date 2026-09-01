@@ -1,0 +1,25 @@
+src/preflight.py
+  14e2b787bfdb772d 429-434,438
+requirements.workshop.txt
+  14e2b787bfdb772d 12-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "3e4a4abd22a94c95fa9b906ae56daccf8b413cc2",
+  "prompts": {
+    "14e2b787bfdb772d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "50dc4ded-0c5d-4ee1-96e9-6d022fb105ff",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 15,
+      "total_deletions": 1,
+      "accepted_lines": 15,
+      "overriden_lines": 0
+    }
+  }
+}
