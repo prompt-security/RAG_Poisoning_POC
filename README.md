@@ -63,7 +63,7 @@ flowchart TD
 
 - **Language Model**: Phi-3.5-mini-instruct (Q4_K_M quantization, 4096 token context)
 - **Embedding Model**: `sentence-transformers/all-MiniLM-L6-v2` (384-dimensional vectors)
-- **Vector Database**: ChromaDB with SQLite backend, similarity search (top-k=3)
+- **Vector Database**: ChromaDB with SQLite backend, similarity search (top-k=4 by default, via `TOP_K_RETRIEVAL` in `.env`)
 - **Orchestration**: LangChain RetrievalQA chain with "stuff" chain type
 - **Environment**: Python 3.11+ with uv package manager
 ## Files Structure

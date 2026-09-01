@@ -39,7 +39,13 @@ class LLMFactory:
             # temperature=0 and a short completion cap keep a live workshop
             # room's results reproducible and each query fast.
             temperature=0,
-            max_tokens=128
+            max_tokens=128,
+            # langchain-openai 1.x always sends the newer max_completion_tokens
+            # field; Ollama's OpenAI-compat layer only recognizes the legacy
+            # max_tokens (ollama/ollama#7125 is still open), so without this
+            # the cap above would be silently ignored for Ollama specifically.
+            # extra_body merges straight into the request body alongside it.
+            extra_body={"max_tokens": 128}
         )
     
     @staticmethod
@@ -68,7 +74,13 @@ class LLMFactory:
             # temperature=0 and a short completion cap keep a live workshop
             # room's results reproducible and each query fast.
             temperature=0,
-            max_tokens=128
+            max_tokens=128,
+            # Belt-and-suspenders for LM Studio, untested here: langchain-openai
+            # 1.x sends max_completion_tokens, and not every OpenAI-compat
+            # server has caught up to that field name yet (see the ollama
+            # branch above). llama-server already honours max_completion_tokens
+            # (verified live), so this is a harmless no-op for it.
+            extra_body={"max_tokens": 128}
         )
 
     @staticmethod
