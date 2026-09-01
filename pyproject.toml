@@ -1,0 +1,48 @@
+[project]
+name = "rag-poisoning-poc"
+version = "0.1.0"
+description = "RAG Poisoning Research - Hidden Parrot attack demonstration"
+# chromadb 0.4.24 / langchain-community 0.4.2 pin numpy<2 (see below), but
+# langchain-community requires numpy>=2.1.0 on Python 3.13+ -- so this
+# dependency set has no satisfiable resolution there. uv sync resolves a
+# universal lock across the whole requires-python range, so this upper bound
+# must be explicit or the lock fails outright.
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # Core RAG Framework
+    "langchain==1.3.9",
+    # langchain-community must track langchain's major line: 0.0.13 only works
+    # against langchain-core<0.2, which langchain 1.3.9 (langchain-core>=1.4.6)
+    # cannot satisfy -- installs fail to resolve at all otherwise.
+    "langchain-community==0.4.2",
+    "langchain-openai==1.1.14",
+
+    # Vector Database
+    "chromadb==0.4.24",
+    # chromadb 0.4.24 has no numpy upper bound and imports np.float_, removed in
+    # NumPy 2.0 -- without this pin, a fresh install silently resolves numpy 2.x
+    # and the demo crashes on the first `import chromadb`.
+    "numpy<2",
+
+    # Embeddings
+    "sentence-transformers==2.7.0",
+    "torch>=2.0.0",
+    "transformers>=4.36.0",
+    "huggingface-hub>=0.20.0",
+
+    # Local LLM Support
+    "llama-cpp-python>=0.3.2",
+
+    # Configuration
+    "python-dotenv==1.2.2",
+
+    # Web scraping for llms.txt downloader
+    "httpx>=0.26.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+]
+
+# This is a scripts-based demo (run via `python3 src/*.py`), not an importable
+# package -- tell uv not to try to build/install it as one.
+[tool.uv]
+package = false

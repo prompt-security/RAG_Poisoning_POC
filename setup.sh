@@ -44,17 +44,10 @@ fi
 
 echo "✅ uv is installed"
 
-# Create virtual environment
-echo "📦 Creating virtual environment..."
-uv venv --python=3.11
+# Create virtual environment and install dependencies from pyproject.toml
+echo "📦 Creating virtual environment and installing dependencies..."
+uv sync --python=3.11
 source .venv/bin/activate
-# Upgrade pip
-echo "⬆️  Upgrading pip..."
-uv pip install --upgrade pip
-
-# Install dependencies
-echo "📚 Installing Python dependencies..."
-uv pip install -r requirements.txt
 
 # Define default values for environment variables if not set
 VECTOR_DB_PATH=${VECTOR_DB_PATH:-"./data/chroma_db"}

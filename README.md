@@ -71,7 +71,7 @@ flowchart TD
 ```
 ragpoc/
 ├── README.md                       # This file
-├── requirements.txt                # Python dependencies
+├── pyproject.toml                  # Python dependencies
 ├── setup.sh                       # Environment setup script
 ├── test_setup.py                  # Setup verification script
 ├── src/                            # Source code

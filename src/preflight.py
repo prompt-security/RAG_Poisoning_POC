@@ -429,7 +429,7 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
         results.append(Result(
             FAIL, "Project dependencies",
             "Not importable: %s" % ", ".join(missing),
-            ["source .venv/bin/activate", "uv pip install -r requirements.txt"]))
+            ["uv sync", "source .venv/bin/activate"]))
     else:
         results.append(Result(OK, "Project dependencies",
                               "langchain, chromadb, sentence-transformers present"))
