@@ -416,9 +416,10 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
         ("langchain_community", "langchain-community"),
         ("langchain_openai", "langchain-openai"),
         # RAGSystem imports RetrievalQA from here (langchain 1.x moved it out
-        # of `langchain` itself). It's not in requirements.txt -- it only
-        # rides in transitively via langchain-community -- so it can vanish
-        # on a future bump with langchain/langchain-community still resolving.
+        # of `langchain` itself). It's not a declared dependency in
+        # pyproject.toml -- it only rides in transitively via
+        # langchain-community -- so it can vanish on a future bump with
+        # langchain/langchain-community still resolving cleanly.
         ("langchain_classic", "langchain-classic"),
         ("chromadb", "chromadb"),
         ("sentence_transformers", "sentence-transformers"),
