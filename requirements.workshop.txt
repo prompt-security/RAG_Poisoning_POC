@@ -9,6 +9,14 @@
 #     system certificate store, fixing SSL_CERTIFICATE_VERIFY_FAILED on a
 #     corporate TLS-intercepting proxy. A no-op off-proxy.
 #
+# pip-system-certs only helps once it's installed and Python code (huggingface_hub,
+# requests, etc.) runs -- it can't fix TLS for the `uv pip install` that installs
+# it in the first place. If THAT step itself fails with a certificate error behind
+# a corporate proxy, uv has its own separate cert handling: retry with
+# `UV_NATIVE_TLS=1 uv pip install -r requirements.workshop.txt` (or
+# `--native-tls`) to make uv trust the OS certificate store too. Not needed and
+# not verified in this session (no TLS-intercepting proxy reproduced here).
+#
 # Selected automatically by `./setup.sh --no-local`.
 
 # Core RAG Framework

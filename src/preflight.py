@@ -426,10 +426,16 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
         if importlib.util.find_spec(module) is None:
             missing.append(dist)
     if missing:
+        # local_required is only True for an explicit --provider local/llamacpp
+        # run. Everyone else (an unfiltered survey included, since BYO endpoint
+        # is the primary path) gets pointed at requirements.workshop.txt --
+        # requirements.txt would reinstall llama-cpp-python's source build for
+        # someone who was never going to use it.
+        req_file = "requirements.txt" if local_required else "requirements.workshop.txt"
         results.append(Result(
             FAIL, "Project dependencies",
             "Not importable: %s" % ", ".join(missing),
-            ["source .venv/bin/activate", "uv pip install -r requirements.txt"]))
+            ["source .venv/bin/activate", "uv pip install -r %s" % req_file]))
     else:
         results.append(Result(OK, "Project dependencies",
                               "langchain, chromadb, sentence-transformers present"))
