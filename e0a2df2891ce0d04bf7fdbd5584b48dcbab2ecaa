@@ -1,0 +1,38 @@
+src/rag_poisoning_corpus.py
+  14e2b787bfdb772d 8-10
+src/rag_system.py
+  14e2b787bfdb772d 77-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "e0a2df2891ce0d04bf7fdbd5584b48dcbab2ecaa",
+  "prompts": {
+    "14e2b787bfdb772d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "50dc4ded-0c5d-4ee1-96e9-6d022fb105ff",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 15,
+      "total_deletions": 1,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    },
+    "a5c6609a9fcd8e28": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9592fe1c-2825-4e88-b47c-0b4d7046f197",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
