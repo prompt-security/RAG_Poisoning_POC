@@ -1,0 +1,23 @@
+src/llm_factory.py
+  14e2b787bfdb772d 39-48,74-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "0508df6bc5f2bedecdaf0b0b8a1c28f3c4f2d41a",
+  "prompts": {
+    "14e2b787bfdb772d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "50dc4ded-0c5d-4ee1-96e9-6d022fb105ff",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 15,
+      "total_deletions": 1,
+      "accepted_lines": 20,
+      "overriden_lines": 0
+    }
+  }
+}
