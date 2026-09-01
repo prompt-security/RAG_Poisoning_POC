@@ -5,7 +5,9 @@ Contains functions to create benign and poisoned documents for RAG system testin
 """
 
 from typing import List
-from langchain.schema import Document
+# langchain 1.x removed the langchain.schema re-export; Document now lives in
+# langchain_core, which every langchain package already depends on.
+from langchain_core.documents import Document
 
 
 def create_benign_corpus() -> List[Document]:
