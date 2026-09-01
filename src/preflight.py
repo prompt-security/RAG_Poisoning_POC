@@ -414,6 +414,11 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
     wanted = [
         ("langchain", "langchain"),
         ("langchain_community", "langchain-community"),
+        # RAGSystem imports RetrievalQA from here directly (langchain 1.x moved
+        # it out of `langchain.chains`); it's a transitive dep of
+        # langchain-community, but a broken or --no-deps install can have one
+        # without the other, so check it explicitly rather than assume.
+        ("langchain_classic", "langchain-classic"),
         ("langchain_openai", "langchain-openai"),
         ("chromadb", "chromadb"),
         ("sentence_transformers", "sentence-transformers"),
