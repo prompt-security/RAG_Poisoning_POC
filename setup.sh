@@ -52,9 +52,15 @@ source .venv/bin/activate
 echo "⬆️  Upgrading pip..."
 uv pip install --upgrade pip
 
-# Install dependencies
+# Install dependencies. --no-local means no in-process llama-cpp-python path,
+# so skip it entirely: it builds from source and hard-fails without cmake +
+# Xcode CLT, even for people who only ever talk to a remote endpoint.
 echo "📚 Installing Python dependencies..."
-uv pip install -r requirements.txt
+if [ "$NO_LOCAL" = true ]; then
+    uv pip install -r requirements.workshop.txt
+else
+    uv pip install -r requirements.txt
+fi
 
 # Define default values for environment variables if not set
 VECTOR_DB_PATH=${VECTOR_DB_PATH:-"./data/chroma_db"}

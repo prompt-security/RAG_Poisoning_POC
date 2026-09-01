@@ -1,0 +1,42 @@
+# RAG Poisoning Workshop - Python Dependencies
+#
+# Same as requirements.txt, for participants using a remote/BYO endpoint
+# (llama-server, Ollama, LM Studio) instead of the in-process llama-cpp-python
+# path:
+#   - llama-cpp-python dropped: it builds from source and hard-fails without
+#     cmake + Xcode CLT, even for people who never touch the local-GGUF path.
+#   - pip-system-certs added: auto-patches Python's ssl module to trust the
+#     system certificate store, fixing SSL_CERTIFICATE_VERIFY_FAILED on a
+#     corporate TLS-intercepting proxy. A no-op off-proxy.
+#
+# Selected automatically by `./setup.sh --no-local`.
+
+# Core RAG Framework
+langchain==1.3.9
+# langchain-community must track langchain's major line: 0.0.13 only works
+# against langchain-core<0.2, which langchain 1.3.9 (langchain-core>=1.4.6)
+# cannot satisfy -- `pip install` fails to resolve at all otherwise.
+langchain-community==0.4.2
+langchain-openai==1.1.14
+
+# Vector Database
+chromadb==0.4.24
+# chromadb 0.4.24 has no numpy upper bound and imports np.float_, removed in
+# NumPy 2.0 -- without this pin, a fresh install silently resolves numpy 2.x
+# and the demo crashes on the first `import chromadb`.
+numpy<2
+
+# Embeddings
+sentence-transformers==2.7.0
+torch>=2.0.0
+transformers>=4.36.0
+huggingface-hub>=0.20.0
+
+# Configuration
+python-dotenv==1.2.2
+pip-system-certs
+
+# Web scraping for llms.txt downloader
+httpx>=0.26.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
