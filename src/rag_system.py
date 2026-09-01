@@ -74,7 +74,11 @@ class RAGSystem:
     
     def _setup_qa_chain(self):
         """Setup the RetrievalQA chain with current configuration"""
-        from langchain.chains import RetrievalQA
+        # langchain 1.x moved RetrievalQA out of the `langchain` package into
+        # the separate langchain_classic package (already pulled in
+        # transitively by langchain-community); `langchain.chains` no longer
+        # exists at all.
+        from langchain_classic.chains import RetrievalQA
         
         search_kwargs = {}
         if self.config.top_k_retrieval is not None:
