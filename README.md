@@ -93,6 +93,9 @@ ragpoc/
 ## Quick Start
 
 ### For Local LLM Inference (Full Setup + LlamaCpp Inference)
+Installs the `local` extra, which adds `llama-cpp-python`. That package has no
+universal wheel and builds from source, so this path needs **cmake and the Xcode
+command line tools** (macOS) or a working C/C++ toolchain.
 ```bash
 # Make setup script executable and run
 chmod +x setup.sh
@@ -106,9 +109,11 @@ python3 test_setup.py
 ```
 
 ### For Remote Inference Only (DeepSeek/Ollama)
-If you plan to use only DeepSeek or Ollama for inference and don't need the local LLM model:
+If you plan to use only DeepSeek or Ollama for inference and don't need the local LLM model.
+This is the lighter path: it skips the ~4GB model download **and** skips
+`llama-cpp-python` entirely, so no compiler toolchain is required.
 ```bash
-# Skip local LLM download to save ~4GB disk space
+# Skip the local LLM download and the llama-cpp-python source build
 chmod +x setup.sh
 ./setup.sh --no-local
 

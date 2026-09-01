@@ -431,10 +431,16 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
         if importlib.util.find_spec(module) is None:
             missing.append(dist)
     if missing:
+        # local_required is only True for an explicit --provider local/llamacpp
+        # run. Everyone else (an unfiltered survey included, since BYO endpoint
+        # is the primary path) gets the bare sync -- `--extra local` would drag
+        # in llama-cpp-python's source build for someone who was never going to
+        # use it.
+        sync = "uv sync --extra local" if local_required else "uv sync"
         results.append(Result(
             FAIL, "Project dependencies",
             "Not importable: %s" % ", ".join(missing),
-            ["uv sync", "source .venv/bin/activate"]))
+            [sync, "source .venv/bin/activate"]))
     else:
         results.append(Result(OK, "Project dependencies",
                               "langchain, chromadb, sentence-transformers present"))
@@ -448,7 +454,7 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
             if local_required else
             "Absent, so --infer cpu/darwin cannot run. Only needed for the "
             "in-process GGUF path; endpoint providers do not use it.",
-            ["uv pip install llama-cpp-python"]))
+            ["uv sync --extra local"]))
     else:
         results.append(Result(OK, "llama-cpp-python", "in-process GGUF path available"))
     return results

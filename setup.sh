@@ -44,9 +44,16 @@ fi
 
 echo "✅ uv is installed"
 
-# Create virtual environment and install dependencies from pyproject.toml
+# Create virtual environment and install dependencies from pyproject.toml.
+# --no-local means no in-process llama-cpp-python path, so skip it entirely:
+# it builds from source and hard-fails without cmake + Xcode CLT, even for
+# people who only ever talk to a remote endpoint.
 echo "📦 Creating virtual environment and installing dependencies..."
-uv sync --python=3.11
+if [ "$NO_LOCAL" = true ]; then
+    uv sync --python=3.11
+else
+    uv sync --python=3.11 --extra local
+fi
 source .venv/bin/activate
 
 # Define default values for environment variables if not set
