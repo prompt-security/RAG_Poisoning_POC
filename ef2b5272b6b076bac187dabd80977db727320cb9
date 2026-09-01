@@ -1,0 +1,23 @@
+src/preflight.py
+  14e2b787bfdb772d 417-421
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "ef2b5272b6b076bac187dabd80977db727320cb9",
+  "prompts": {
+    "14e2b787bfdb772d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "50dc4ded-0c5d-4ee1-96e9-6d022fb105ff",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 0,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
