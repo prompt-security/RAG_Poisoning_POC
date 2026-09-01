@@ -505,10 +505,16 @@ def _download_fix(path: str) -> List[str]:
             "python3 src/preflight.py --write-env local --model phi-4-mini"]
 
 
-def check_gguf(env: Dict[str, str], deep: bool = False) -> Result:
+def check_gguf(env: Dict[str, str], deep: bool = False, explicit: bool = False) -> Result:
     path = env.get("LLAMA_MODEL_PATH", "./models/llm/Phi-3.5-mini-instruct.Q4_K_M.gguf")
     if not os.path.exists(path):
-        return Result(FAIL, "Local GGUF missing", path, _download_fix(path))
+        # Mirrors check_ollama/check_llama_server/check_lmstudio: in an
+        # unfiltered survey (explicit=False), a path nobody is trying to use
+        # not existing is informational, not a blocking problem -- someone on
+        # llama-server/Ollama has no reason to have a local GGUF at all. Only
+        # an explicitly selected --provider local/llamacpp should FAIL here.
+        return Result(FAIL if explicit else INFO, "Local GGUF missing", path,
+                      _download_fix(path))
     size_gb = os.path.getsize(path) / (1024 ** 3)
     if size_gb < 0.5:
         return Result(FAIL, "Local GGUF looks truncated",
@@ -1086,7 +1092,7 @@ def run_checks(provider: Optional[str], deep: bool) -> List[Result]:
     results.append(check_embedding_cache(env))
 
     if provider in (None, "local", "llamacpp"):
-        results.append(check_gguf(env, deep))
+        results.append(check_gguf(env, deep, explicit=provider in ("local", "llamacpp")))
     shape = check_base_url_shape(env)
     if shape is not None:
         results.append(shape)
