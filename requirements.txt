@@ -2,11 +2,18 @@
 
 # Core RAG Framework
 langchain==1.3.9
-langchain-community==0.0.13
+# langchain-community must track langchain's major line: 0.0.13 only works
+# against langchain-core<0.2, which langchain 1.3.9 (langchain-core>=1.4.6)
+# cannot satisfy -- `pip install` fails to resolve at all otherwise.
+langchain-community==0.4.2
 langchain-openai==1.1.14
 
 # Vector Database
 chromadb==0.4.24
+# chromadb 0.4.24 has no numpy upper bound and imports np.float_, removed in
+# NumPy 2.0 -- without this pin, a fresh install silently resolves numpy 2.x
+# and the demo crashes on the first `import chromadb`.
+numpy<2
 
 # Embeddings
 sentence-transformers==2.7.0
