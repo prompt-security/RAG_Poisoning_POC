@@ -54,9 +54,9 @@ class RAGPoisoningDemo:
         
         print("✅ RAG system initialized successfully!")
     
-    def run_demo(self):
+    def run_demo(self, show_prompt: bool = False, payload: Optional[str] = None):
         """Run the complete attack demonstration"""
-        return self.attack_demo.run_attack_demo()
+        return self.attack_demo.run_attack_demo(show_prompt=show_prompt, payload=payload)
 
 
 def main():
@@ -67,8 +67,14 @@ def main():
                         default=None,
                         help="Force inference device/provider: cpu, cuda, darwin (macOS MPS), "
                              "ollama, openai-compat (llama-server / LM Studio), or deepseek")
+    parser.add_argument('--show-prompt', action='store_true',
+                        help="Print the assembled prompt (system + retrieved context + question) "
+                             "sent to the LLM for each query")
+    parser.add_argument('--payload-file', metavar='FILE',
+                        help="Use FILE's content as the poisoned document instead of the "
+                             "built-in pirate-persona payload")
     args = parser.parse_args()
-    
+
     # Handle different inference options
     if args.infer in ['ollama', 'openai-compat', 'deepseek']:
         device = None 
@@ -83,12 +89,17 @@ def main():
     config.print_config(provider)
     
     try:
+        payload = None
+        if args.payload_file:
+            with open(args.payload_file, 'r', encoding='utf-8') as payload_file:
+                payload = payload_file.read()
+
         # Initialize and run demo
         logger.info("Initializing RAG Poisoning Demo")
         demo = RAGPoisoningDemo(device=device, provider=provider)
         
         # Run the complete demonstration
-        clean_results, poisoned_results = demo.run_demo()
+        clean_results, poisoned_results = demo.run_demo(show_prompt=args.show_prompt, payload=payload)
         
         print("\n🎯 Demo completed successfully!")
         print("This demonstrates the vulnerability of RAG systems to prompt injection via poisoned embeddings.")

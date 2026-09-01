@@ -98,23 +98,23 @@ class RAGSystem:
         """Public method to reinitialize the QA chain after vector database changes"""
         self._setup_qa_chain()
     
-    def setup_vector_database(self, include_poison: bool = False):
+    def setup_vector_database(self, include_poison: bool = False, payload: Optional[str] = None):
         """Populate the vector database with documents"""
         from rag_poisoning_corpus import create_benign_corpus, create_poisoned_document
-        
+
         logger.info(f"Setting up vector database (poison: {include_poison})")
         print(f"📚 Setting up vector database (poison: {include_poison})...")
-        
+
         # Create new vectorstore instance with clean collection
         self._initialize_vectorstore(create_new=True)
-        
+
         # Add benign documents
         benign_docs = create_benign_corpus()
         self.vectorstore.add_documents(benign_docs)
-        
+
         # Optionally add poisoned document
         if include_poison:
-            poisoned_doc = create_poisoned_document()
+            poisoned_doc = create_poisoned_document(payload=payload)
             self.vectorstore.add_documents([poisoned_doc])
             print("☠️  Poisoned document injected!")
         
@@ -125,3 +125,26 @@ class RAGSystem:
     def query(self, query_text: str) -> dict:
         """Execute a query against the RAG system"""
         return self.qa_chain.invoke({"query": query_text})
+
+    def format_prompt(self, query_text: str, source_documents: List) -> str:
+        """Render the exact prompt the chain sent to the LLM, for --show-prompt.
+
+        Rebuilds it from the "stuff" chain's own document template/separator
+        and its own prompt template, instead of hardcoding a copy of either --
+        so this stays accurate to whatever chain_type/prompt is configured.
+
+        The chain picks a ChatPromptTemplate for chat models (ollama,
+        openai-compat, deepseek -- all ChatOpenAI) but a plain PromptTemplate
+        for completion models (the local llama-cpp-python path), and only the
+        former has format_messages(); branch on which one is actually there.
+        """
+        combine_chain = self.qa_chain.combine_documents_chain
+        context = combine_chain.document_separator.join(
+            combine_chain.document_prompt.format(page_content=doc.page_content)
+            for doc in source_documents
+        )
+        prompt = combine_chain.llm_chain.prompt
+        if hasattr(prompt, "format_messages"):
+            messages = prompt.format_messages(context=context, question=query_text)
+            return "\n\n".join(f"[{message.type}]\n{message.content}" for message in messages)
+        return prompt.format(context=context, question=query_text)
