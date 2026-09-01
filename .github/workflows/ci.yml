@@ -1,28 +1,59 @@
 name: CI
 
-# SCOPE: exit-code semantics only. This pipeline asserts what preflight
-# CONCLUDES -- which statuses it assigns, which exit status it returns, what it
-# prints -- on a BARE runner with no project dependencies, no model weights and
-# no inference engine.
+# SCOPE: two contracts, deliberately separated.
 #
-# It deliberately does NOT stand up or simulate an inference endpoint. Those
-# tests live in test_preflight_endpoints.py and are run locally: simulating an
-# engine in CI is environment-sensitive and is not what this gate is for.
+#   (A) What preflight CONCLUDES on a BARE runner -- which statuses it assigns,
+#       which exit status it returns, what it prints -- with no project
+#       dependencies, no model weights and no inference engine. That is the
+#       `preflight-contract` job, unchanged from the original pipeline.
 #
-# The contract being guarded is the one that actually broke in review: preflight
-# reporting success while the demo could not possibly run.
+#   (B) That a fresh clone still INSTALLS and still RUNS THE DEMO, on the
+#       platform workshop participants actually use. That is `lock-integrity`
+#       and `demo-runs`.
+#
+# (B) exists because three regressions reached main with (A) fully green:
+#   1. langchain-community 0.0.13 became unsatisfiable against langchain 1.3.9,
+#      so the install failed to resolve at all.
+#   2. chromadb 0.4.24 crashed on `import chromadb` under NumPy 2 (np.float_).
+#   3. `langchain.chains` stopped existing after the langchain 1.x split, which
+#      killed RetrievalQA -- the "stuff" chain the whole demo teaches.
+# All three were invisible here because nothing ever installed a dependency or
+# built the chain. Each one individually made the demo completely unrunnable.
+#
+# The imports that matter live inside METHOD BODIES (src/rag_system.py:43 and
+# :77, src/utils.py:39), so `import rag_system`, `compileall` and even
+# `test_setup.py` all succeed while the demo is dead. The only thing that
+# reaches them is CONSTRUCTING the chain -- which is why ci/smoke.py constructs
+# and queries it instead of importing it, and ci/e2e.py runs the real entry
+# point against a stub endpoint.
+#
+# `gate` is the single aggregation context to require in branch protection --
+# never the matrix legs, never the individual jobs.
+
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+
 jobs:
+  # ==========================================================================
+  # REQUIRED -- FAST. Bare runner, no dependencies. (~45 s)
+  # ==========================================================================
   preflight-contract:
     name: preflight contract (bare runner, py${{ matrix.python }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -39,7 +70,7 @@ jobs:
 
       - name: Byte-compile every source file
         run: |
-          python -m compileall -q src test_setup.py \
+          python -m compileall -q src ci test_setup.py \
             test_preflight.py test_preflight_endpoints.py
 
       # Statuses, exit codes, output and config parsing. No stub endpoint: the
@@ -112,3 +143,204 @@ jobs:
             exit 1
           fi
           echo "unknown model rejected with exit $rc, as expected."
+
+      # This file's own header says CI does not run it because simulating an
+      # engine is environment-sensitive -- but what it actually does is bind
+      # 127.0.0.1 on an ephemeral port with http.server, stdlib only. That is
+      # the most stable thing on a runner, and it is the ONLY test of
+      # preflight's SUCCESS direction. Without it, a preflight that FAILs
+      # unconditionally ships green.
+      - name: Endpoint stub tests (preflight's PASS direction)
+        run: python test_preflight_endpoints.py
+
+  # ==========================================================================
+  # REQUIRED -- FAST. Metadata only: no install, no downloads. (~30 s)
+  # ==========================================================================
+  lock-integrity:
+    name: lock integrity (pyproject <-> uv.lock)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      # Regression #1 in one command: an unsatisfiable set cannot produce a
+      # lock, so this fails outright. It also catches a hand-edited pyproject
+      # left with a stale lock -- the drift that makes `uv sync` on a
+      # participant's Mac resolve something CI never tested.
+      - name: uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
+      # Regressions #2 and #3 at their root, read straight out of the lock in
+      # ~0.2 s with nothing downloaded. These are the pins that, when they move,
+      # break the demo silently.
+      - name: The load-bearing pins are still what the demo needs
+        run: |
+          python3 - <<'PY'
+          import sys, tomllib
+          with open('uv.lock','rb') as fh:
+              lock = tomllib.load(fh)
+          pkgs = {p['name']: p['version'] for p in lock['package']}
+          bad = []
+
+          def need(name, ok, why):
+              got = pkgs.get(name)
+              if not ok(got):
+                  bad.append('%s == %r : %s' % (name, got, why))
+
+          # chromadb 0.4.24 imports np.float_, removed in NumPy 2.0.
+          need('numpy', lambda v: v and v.startswith('1.'),
+               'chromadb 0.4.24 crashes on import under NumPy 2.x')
+          need('chromadb', lambda v: v and v.startswith('0.4.'),
+               'utils.collection_exists reads .name off list_collections(); '
+               '0.6+ returns plain strings')
+          # RetrievalQA reaches the venv ONLY via langchain-community ->
+          # langchain-classic. It is not a direct dependency, so a community
+          # bump can delete the demo's core chain with a clean, resolvable install.
+          need('langchain-classic', lambda v: bool(v),
+               'src/rag_system.py imports RetrievalQA from langchain_classic')
+
+          for line in bad:
+              print('::error::lock: %s' % line)
+          print('\n'.join('  ok  %s %s' % (n, pkgs.get(n))
+                          for n in ('numpy','chromadb','langchain','langchain-classic',
+                                    'langchain-community','langchain-openai')))
+          sys.exit(1 if bad else 0)
+          PY
+
+      # The extras split is the whole reason a BYO-endpoint participant does not
+      # need a compiler. If it silently collapses, the base install starts
+      # source-building llama-cpp-python again. Catching that here costs 0.2 s
+      # instead of a 15-minute cmake build.
+      - name: llama-cpp-python is optional, not a base dependency
+        run: |
+          python3 - <<'PY'
+          import sys, tomllib
+          with open('pyproject.toml','rb') as fh:
+              proj = tomllib.load(fh)['project']
+          base = ' '.join(proj['dependencies'])
+          extra = ' '.join(proj.get('optional-dependencies', {}).get('local', []))
+          bad = []
+          if 'llama-cpp-python' in base:
+              bad.append('llama-cpp-python is back in [project.dependencies]; '
+                         'every endpoint-only user now needs cmake + Xcode CLT')
+          if 'llama-cpp-python' not in extra:
+              bad.append('the `local` extra no longer provides llama-cpp-python, '
+                         'so ./setup.sh cannot install the in-process GGUF path')
+          for b in bad:
+              print('::error::extras: %s' % b)
+          print('base deps: %d | local extra: %s' % (len(proj['dependencies']), extra or '(empty)'))
+          sys.exit(1 if bad else 0)
+          PY
+
+  # ==========================================================================
+  # REQUIRED -- the real gate. macOS because that is what participants use.
+  # (~4 min warm, ~8 min cold)
+  # ==========================================================================
+  demo-runs:
+    name: install and run the demo (macOS, py3.11)
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      # ~90 MB from HuggingFace. Cached so the common case does not depend on
+      # hf.co being up; the key changes if the model does.
+      - name: Cache the embedding model
+        uses: actions/cache@v6
+        with:
+          path: models/embedding
+          key: hf-${{ runner.os }}-${{ env.EMBEDDING_MODEL }}-v1
+
+      # The literal command the README gives participants. No actions/setup-python:
+      # uv provisions the managed 3.11 exactly as it would on a fresh Mac.
+      - name: ./setup.sh --no-local (the documented BYO-endpoint path)
+        run: ./setup.sh --no-local
+
+      # setup.sh runs a bare `uv sync`, which will happily REGENERATE the lock.
+      # Without this, the highest-fidelity job would be validating a lock it had
+      # just silently rewritten.
+      - name: setup.sh did not rewrite the lock
+        run: git diff --exit-code -- uv.lock pyproject.toml
+
+      # --no-local must not have dragged in the source build.
+      - name: --no-local really skipped llama-cpp-python
+        run: |
+          if .venv/bin/python -c "import llama_cpp" 2>/dev/null; then
+            echo "::error::llama_cpp is importable after ./setup.sh --no-local;"
+            echo "::error::endpoint-only participants are paying for a source build."
+            exit 1
+          fi
+          echo "llama_cpp correctly absent."
+
+      # With the dependencies actually installed, preflight must now report them
+      # present. The bare-runner job only ever asserts the FAIL direction, so a
+      # preflight that FAILs forever would otherwise ship green.
+      - name: preflight reports the dependencies as satisfied
+        run: |
+          .venv/bin/python src/preflight.py --json > /tmp/pf.json || true
+          .venv/bin/python - <<'PY'
+          import json, sys
+          rep = json.load(open('/tmp/pf.json'))
+          dep = [r for r in rep['results'] if r['title'] == 'Project dependencies']
+          assert dep, 'preflight printed no "Project dependencies" result at all'
+          if dep[0]['status'] != 'OK':
+              print('::error::preflight still reports dependencies missing after a '
+                    'successful install: %s' % dep[0]['detail'])
+              sys.exit(1)
+          print('preflight: %s -- %s' % (dep[0]['status'], dep[0]['detail']))
+          PY
+
+      - name: test_setup.py (exit code only)
+        run: .venv/bin/python test_setup.py --no-local
+
+      # Regressions #2 and #3. Constructs the real RetrievalQA chain, ingests
+      # the corpus, retrieves, answers. Fake embeddings: offline, ~5 s.
+      - name: Chain constructs and answers (fake embeddings)
+        run: .venv/bin/python ci/smoke.py --embeddings fake
+
+      # Same, with the real MiniLM and TOP_K_RETRIEVAL=3 -- proves the poisoned
+      # document actually out-ranks the benign corpus for the demo's own query.
+      - name: Chain constructs and answers (real embeddings)
+        run: .venv/bin/python ci/smoke.py --embeddings real
+        env:
+          SENTENCE_TRANSFORMERS_HOME: ./models/embedding
+          TRANSFORMERS_CACHE: ./models/embedding
+
+      # The real entry point against a stub OpenAI-compatible endpoint. Covers
+      # what smoke.py bypasses: llm_factory, langchain-openai's HTTP transport,
+      # and attack_demo.py's own detector. Asserts the poisoned text reaches the
+      # model prompt -- never that a real model complies with it.
+      - name: Demo runs end to end against a stub endpoint
+        run: .venv/bin/python ci/e2e.py
+        env:
+          SENTENCE_TRANSFORMERS_HOME: ./models/embedding
+          TRANSFORMERS_CACHE: ./models/embedding
+
+  # ==========================================================================
+  # The ONLY context to require in branch protection.
+  # ==========================================================================
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    needs: [preflight-contract, lock-integrity, demo-runs]
+    if: always()
+    steps:
+      # `needs.*.result` is 'success', 'failure', 'cancelled' or 'skipped'.
+      # Checking for failure alone would let a skipped job through, which is how
+      # an aggregation gate quietly stops gating.
+      - name: Every required job succeeded
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "upstream results: $results"
+          for r in $results; do
+            if [ "$r" != "success" ]; then
+              echo "::error::a required job did not succeed (saw: $results)"
+              exit 1
+            fi
+          done
+          echo "All required jobs succeeded."
