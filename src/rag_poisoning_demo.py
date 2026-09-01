@@ -75,11 +75,6 @@ def main():
                              "built-in pirate-persona payload")
     args = parser.parse_args()
 
-    payload = None
-    if args.payload_file:
-        with open(args.payload_file, 'r') as payload_file:
-            payload = payload_file.read()
-
     # Handle different inference options
     if args.infer in ['ollama', 'openai-compat', 'deepseek']:
         device = None 
@@ -94,6 +89,11 @@ def main():
     config.print_config(provider)
     
     try:
+        payload = None
+        if args.payload_file:
+            with open(args.payload_file, 'r', encoding='utf-8') as payload_file:
+                payload = payload_file.read()
+
         # Initialize and run demo
         logger.info("Initializing RAG Poisoning Demo")
         demo = RAGPoisoningDemo(device=device, provider=provider)

@@ -132,13 +132,19 @@ class RAGSystem:
         Rebuilds it from the "stuff" chain's own document template/separator
         and its own prompt template, instead of hardcoding a copy of either --
         so this stays accurate to whatever chain_type/prompt is configured.
+
+        The chain picks a ChatPromptTemplate for chat models (ollama,
+        openai-compat, deepseek -- all ChatOpenAI) but a plain PromptTemplate
+        for completion models (the local llama-cpp-python path), and only the
+        former has format_messages(); branch on which one is actually there.
         """
         combine_chain = self.qa_chain.combine_documents_chain
         context = combine_chain.document_separator.join(
             combine_chain.document_prompt.format(page_content=doc.page_content)
             for doc in source_documents
         )
-        messages = combine_chain.llm_chain.prompt.format_messages(
-            context=context, question=query_text
-        )
-        return "\n\n".join(f"[{message.type}]\n{message.content}" for message in messages)
+        prompt = combine_chain.llm_chain.prompt
+        if hasattr(prompt, "format_messages"):
+            messages = prompt.format_messages(context=context, question=query_text)
+            return "\n\n".join(f"[{message.type}]\n{message.content}" for message in messages)
+        return prompt.format(context=context, question=query_text)
