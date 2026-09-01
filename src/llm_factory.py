@@ -36,8 +36,10 @@ class LLMFactory:
             model=config.ollama_model,
             openai_api_base=f"{config.ollama_base_url}/v1",
             openai_api_key="dummy-key",
-            temperature=0.7,
-            max_tokens=256  # Limit token count for faster responses
+            # temperature=0 and a short completion cap keep a live workshop
+            # room's results reproducible and each query fast.
+            temperature=0,
+            max_tokens=128
         )
     
     @staticmethod
@@ -63,8 +65,10 @@ class LLMFactory:
             model=config.openai_compat_model,
             openai_api_base=f"{config.openai_compat_base_url}/v1",
             openai_api_key="dummy-key",
-            temperature=0.7,
-            max_tokens=256
+            # temperature=0 and a short completion cap keep a live workshop
+            # room's results reproducible and each query fast.
+            temperature=0,
+            max_tokens=128
         )
 
     @staticmethod
