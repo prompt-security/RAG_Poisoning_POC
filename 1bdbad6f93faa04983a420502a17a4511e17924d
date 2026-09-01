@@ -1,0 +1,29 @@
+pyproject.toml
+  2f9046f9beeb0283 1-53,55-58
+src/preflight.py
+  2f9046f9beeb0283 434-439,443,457
+README.md
+  2f9046f9beeb0283 74,96-98,112-114,116
+setup.sh
+  2f9046f9beeb0283 47-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "1bdbad6f93faa04983a420502a17a4511e17924d",
+  "prompts": {
+    "2f9046f9beeb0283": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "027cad70-4403-4e18-8773-30e77ded211e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 511,
+      "total_deletions": 12,
+      "accepted_lines": 83,
+      "overriden_lines": 0
+    }
+  }
+}
