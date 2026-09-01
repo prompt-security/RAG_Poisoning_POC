@@ -1,0 +1,23 @@
+requirements.txt
+  14e2b787bfdb772d 5-8,13-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "b8a43d254e72fc9205ecbcc63fcb3c0fc70342f3",
+  "prompts": {
+    "14e2b787bfdb772d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "50dc4ded-0c5d-4ee1-96e9-6d022fb105ff",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 1,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    }
+  }
+}
