@@ -1,0 +1,31 @@
+src/preflight.py
+  2f9046f9beeb0283 434-436,438,440-450,461
+setup.sh
+  2f9046f9beeb0283 52-56,58,60
+README.md
+  2f9046f9beeb0283 112-114
+.github/workflows/ci.yml
+  2f9046f9beeb0283 264-267
+ci/e2e.py
+  2f9046f9beeb0283 71-84,88,97,104-111,113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "395cb47c14b5438f0583c31f2954d68ecc540558",
+  "prompts": {
+    "2f9046f9beeb0283": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "027cad70-4403-4e18-8773-30e77ded211e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 60,
+      "total_deletions": 22,
+      "accepted_lines": 56,
+      "overriden_lines": 0
+    }
+  }
+}
