@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -67,10 +68,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _route(self):
+        """
+        The EXACT path, query stripped, one optional trailing slash allowed.
+
+        Deliberately not a suffix match: `endswith('/chat/completions')` would
+        also accept `/v2/chat/completions`, which is precisely the transport
+        switch this gate claims to detect. Matching loosely here would let the
+        assertion pass while every BYO-endpoint participant broke.
+        """
+        path = urlsplit(self.path).path
+        if len(path) > 1 and path.endswith("/"):
+            path = path[:-1]
+        return path
+
     def do_GET(self):
         # langchain-openai may probe /v1/models. Anything else is a transport
         # change we want to hear about.
-        if self.path.rstrip("/").endswith("/models"):
+        if self._route() == "/v1/models":
             return self._json(200, {"object": "list",
                                     "data": [{"id": MODEL, "object": "model"}]})
         TRANSCRIPT.append({"path": self.path, "rejected": True, "method": "GET"})
@@ -78,16 +93,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        try:
-            req = json.loads(raw or b"{}")
-        except ValueError:
-            req = {}
 
-        if not self.path.rstrip("/").endswith("/chat/completions"):
+        if self._route() != "/v1/chat/completions":
             TRANSCRIPT.append({"path": self.path, "rejected": True, "method": "POST"})
             return self._json(404, {"error": "unexpected POST %s" % self.path})
 
-        msgs = req.get("messages") or []
+        try:
+            req = json.loads(raw or b"{}")
+        except ValueError:
+            req = None
+        # A non-object body is itself a transport change. Record it as rejected
+        # and answer 400, rather than letting `req.get` raise an AttributeError
+        # that surfaces as an opaque 500 with no clue why.
+        if not isinstance(req, dict):
+            TRANSCRIPT.append({"path": self.path, "rejected": True, "method": "POST",
+                               "reason": "body was not a JSON object"})
+            return self._json(400, {"error": "expected a JSON object body"})
+
+        msgs = [m for m in (req.get("messages") or []) if isinstance(m, dict)]
         prompt = "\n".join(str(m.get("content", "")) for m in msgs)
         poisoned = POISON_MARKER in prompt
 
@@ -137,7 +160,9 @@ def main():
     env = dict(os.environ)
     env["OPENAI_COMPAT_BASE_URL"] = "http://127.0.0.1:%d" % port
     env["OPENAI_COMPAT_MODEL"] = MODEL
-    env.setdefault("TOP_K_RETRIEVAL", "4")
+    # Gate-owned, NOT setdefault: an ambient TOP_K_RETRIEVAL would silently
+    # change what these assertions test (or crash config.py if non-numeric).
+    env["TOP_K_RETRIEVAL"] = "4"
     env.setdefault("SENTENCE_TRANSFORMERS_HOME", "./models/embedding")
     env.setdefault("TRANSFORMERS_CACHE", "./models/embedding")
 
@@ -162,7 +187,7 @@ def main():
     print("\n[3] transport (what langchain-openai actually spoke)")
     rejected = sorted({e["path"] for e in TRANSCRIPT if e.get("rejected")})
     check(not rejected,
-          "no request hit an endpoint outside /v1/chat/completions",
+          "every request hit exactly /v1/chat/completions or /v1/models",
           ("unexpected: %s -- a transport switch would break every BYO-endpoint "
            "participant" % rejected) if rejected else "")
     calls = [e for e in TRANSCRIPT if not e.get("rejected")]

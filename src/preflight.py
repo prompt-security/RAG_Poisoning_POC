@@ -431,13 +431,23 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
     for module, dist in wanted:
         if importlib.util.find_spec(module) is None:
             missing.append(dist)
+    # Needed twice below, and the bare-sync hazard depends on it.
+    has_llama = importlib.util.find_spec("llama_cpp") is not None
+
     if missing:
-        # local_required is only True for an explicit --provider local/llamacpp
-        # run. Everyone else (an unfiltered survey included, since BYO endpoint
-        # is the primary path) gets the bare sync -- `--extra local` would drag
-        # in llama-cpp-python's source build for someone who was never going to
-        # use it.
-        sync = "uv sync --extra local" if local_required else "uv sync"
+        # Which sync to recommend turns on two things, not one.
+        #
+        # `--extra local` would drag in llama-cpp-python's source build for
+        # someone who was never going to use it, so the bare sync is right for
+        # the endpoint-only majority. BUT `uv sync` is EXACT: it uninstalls
+        # anything outside the resolved set. Handing a bare sync to someone who
+        # already has the local extra would silently remove llama-cpp-python
+        # and break --infer cpu/darwin -- a repair that breaks a working path
+        # is worse than the problem it fixes.
+        #
+        # So keep the extra whenever the local path is either explicitly
+        # selected OR already installed, and only then.
+        sync = "uv sync --extra local" if (local_required or has_llama) else "uv sync"
         results.append(Result(
             FAIL, "Project dependencies",
             "Not importable: %s" % ", ".join(missing),
@@ -448,7 +458,7 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
 
     # llama-cpp-python is only needed for the in-process local path -- but if
     # that IS the selected path, its absence is fatal, not advisory.
-    if importlib.util.find_spec("llama_cpp") is None:
+    if not has_llama:
         results.append(Result(
             FAIL if local_required else WARN, "llama-cpp-python",
             "Required for the selected in-process GGUF path (--infer cpu/darwin)."

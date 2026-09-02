@@ -109,9 +109,9 @@ python3 test_setup.py
 ```
 
 ### For Remote Inference Only (DeepSeek/Ollama)
-If you plan to use only DeepSeek or Ollama for inference and don't need the local LLM model.
-This is the lighter path: it skips the ~4GB model download **and** skips
-`llama-cpp-python` entirely, so no compiler toolchain is required.
+Use this path if you plan to use only DeepSeek or Ollama for inference and don't
+need a local LLM. It is the lighter option: it skips the ~4GB model download
+**and** skips `llama-cpp-python` entirely, so no compiler toolchain is required.
 ```bash
 # Skip the local LLM download and the llama-cpp-python source build
 chmod +x setup.sh

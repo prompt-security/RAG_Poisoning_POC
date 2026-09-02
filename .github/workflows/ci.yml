@@ -261,9 +261,10 @@ jobs:
       - name: ./setup.sh --no-local (the documented BYO-endpoint path)
         run: ./setup.sh --no-local
 
-      # setup.sh runs a bare `uv sync`, which will happily REGENERATE the lock.
-      # Without this, the highest-fidelity job would be validating a lock it had
-      # just silently rewritten.
+      # setup.sh now passes --locked, so it cannot re-resolve. This stays as the
+      # belt-and-braces check: if that flag is ever dropped, the highest-fidelity
+      # job would go back to validating a lock it had just silently rewritten,
+      # and this is the step that would notice.
       - name: setup.sh did not rewrite the lock
         run: git diff --exit-code -- uv.lock pyproject.toml
 
