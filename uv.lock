@@ -1993,13 +1993,17 @@ dependencies = [
     { name = "langchain" },
     { name = "langchain-community" },
     { name = "langchain-openai" },
-    { name = "llama-cpp-python" },
     { name = "lxml" },
     { name = "numpy" },
     { name = "python-dotenv" },
     { name = "sentence-transformers" },
     { name = "torch" },
     { name = "transformers" },
+]
+
+[package.optional-dependencies]
+local = [
+    { name = "llama-cpp-python" },
 ]
 
 [package.metadata]
@@ -2011,7 +2015,7 @@ requires-dist = [
     { name = "langchain", specifier = "==1.3.9" },
     { name = "langchain-community", specifier = "==0.4.2" },
     { name = "langchain-openai", specifier = "==1.1.14" },
-    { name = "llama-cpp-python", specifier = ">=0.3.2" },
+    { name = "llama-cpp-python", marker = "extra == 'local'", specifier = ">=0.3.2" },
     { name = "lxml", specifier = ">=4.9.0" },
     { name = "numpy", specifier = "<2" },
     { name = "python-dotenv", specifier = "==1.2.2" },
@@ -2019,6 +2023,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.0.0" },
     { name = "transformers", specifier = ">=4.36.0" },
 ]
+provides-extras = ["local"]
 
 [[package]]
 name = "regex"
