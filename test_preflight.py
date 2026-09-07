@@ -115,9 +115,17 @@ class TestFatalPrerequisites(unittest.TestCase):
             res = preflight.check_embedding_cache({"SENTENCE_TRANSFORMERS_HOME": tmp})
         self.assertEqual(res.status, FAIL)
 
-    def test_missing_gguf_is_fatal(self):
-        res = preflight.check_gguf({"LLAMA_MODEL_PATH": "/nonexistent/model.gguf"})
+    def test_missing_gguf_is_fatal_for_the_explicit_local_path(self):
+        res = preflight.check_gguf({"LLAMA_MODEL_PATH": "/nonexistent/model.gguf"},
+                                   explicit=True)
         self.assertEqual(res.status, FAIL)
+
+    def test_missing_gguf_does_not_block_a_survey(self):
+        # Mirrors test_ollama_unreachable_does_not_block_a_survey: someone on
+        # llama-server/Ollama has no reason to have a local GGUF at all, so an
+        # unfiltered survey must not fail the roster line over it.
+        res = preflight.check_gguf({"LLAMA_MODEL_PATH": "/nonexistent/model.gguf"})
+        self.assertEqual(res.status, INFO)
 
     def test_non_gguf_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,7 +161,8 @@ class TestRemediationIsActionable(unittest.TestCase):
             for key, spec in preflight.UNGATED_MODELS.items():
                 with self.subTest(model=key):
                     res = preflight.check_gguf(
-                        {"LLAMA_MODEL_PATH": os.path.join(tmp, spec.filename)})
+                        {"LLAMA_MODEL_PATH": os.path.join(tmp, spec.filename)},
+                        explicit=True)
                     self.assertEqual(res.status, FAIL)
                     self.assertTrue(any(key in c for c in res.fix),
                                     "fix %r should mention %r" % (res.fix, key))
