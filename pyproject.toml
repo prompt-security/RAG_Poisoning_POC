@@ -20,7 +20,7 @@ dependencies = [
     "langchain-openai==1.1.14",
 
     # Vector Database
-    "chromadb==0.4.24",
+    "chromadb==1.5.9",
     # chromadb 0.4.24 has no numpy upper bound and imports np.float_, removed in
     # NumPy 2.0 -- without this pin, a fresh install silently resolves numpy 2.x
     # and the demo crashes on the first `import chromadb`.
