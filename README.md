@@ -194,6 +194,21 @@ The complete research paper is contained in `research_paper/index.qmd` and organ
 - **DeepSeek:** Valid API key configured in `.keys` file (copy from `.keys.example`)
 - Both options significantly reduce local storage requirements
 
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0**
+(`AGPL-3.0-only`). The full text is in [LICENSE](LICENSE).
+
+Copyright (C) 2025-2026 Prompt Security
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See [LICENSE](LICENSE) for details.
+
 ---
 
 **⚠️ Responsible Research Notice**: This work is intended for legitimate security research and educational purposes. Please use these techniques responsibly and in accordance with applicable laws and ethical guidelines.

@@ -2,6 +2,8 @@
 name = "rag-poisoning-poc"
 version = "0.1.0"
 description = "RAG Poisoning Research - Hidden Parrot attack demonstration"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 # chromadb 0.4.24 / langchain-community 0.4.2 pin numpy<2 (see below), but
 # langchain-community requires numpy>=2.1.0 on Python 3.13+ -- so this
 # dependency set has no satisfiable resolution there. uv sync resolves a
