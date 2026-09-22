@@ -25,9 +25,16 @@ dependencies = [
     "numpy<2",
 
     # Embeddings
-    "sentence-transformers==2.7.0",
+    # sentence-transformers 2.7.0 caps transformers<5.0.0, which pins the whole
+    # stack to versions carrying CVE-2026-1839/-4372/-5241/-9856. Every fix for
+    # those lands in transformers 5.x, so sentence-transformers must move to a
+    # 5.x-compatible release. 6.1.0 keeps the SentenceTransformer(...).encode()
+    # API the demo uses and still resolves under the numpy<2 pin below.
+    "sentence-transformers==6.1.0",
     "torch>=2.0.0",
-    "transformers>=4.36.0",
+    # Security floor: 5.10.0 is the first release patched against all four
+    # transformers advisories above (the highest is CVE-2026-9856, fixed 5.10.0).
+    "transformers>=5.10.0",
     "huggingface-hub>=0.20.0",
 
     # Local LLM Support
