@@ -1,0 +1,55 @@
+version: 2
+
+updates:
+  # MUST be "uv", not "pip". The pip updater can parse a PEP-621 pyproject.toml
+  # but has no concept of uv.lock: it would bump the pin and leave the lock
+  # stale, which is exactly the drift `lock-integrity` exists to catch. The uv
+  # updater rewrites pyproject.toml and uv.lock together, in one PR.
+  #
+  # The previous config was implicit (there was no dependabot.yml at all) and
+  # targeted the pip ecosystem against requirements.txt, which no longer exists.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "build(deps)"
+      prefix-development: "build(deps-dev)"
+    groups:
+      # This is regression #1's root cause, fixed. langchain 0.1.0 -> 1.3.9 and
+      # langchain-openai 0.0.5 -> 1.1.14 arrived as SEPARATE PRs and were merged
+      # seconds apart, while langchain-community stayed on 0.0.13. No single PR
+      # ever contained a resolvable set, so no single CI run could have caught
+      # it. Grouping the family means one PR, one resolution, one CI run.
+      langchain:
+        applies-to: version-updates
+        patterns: ["langchain", "langchain-*"]
+      langchain-security:
+        applies-to: security-updates
+        patterns: ["langchain", "langchain-*"]
+      minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        exclude-patterns: ["langchain", "langchain-*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # numpy<2 is load-bearing: chromadb 0.4.24 imports np.float_ (regression
+      # #2). Only a chromadb upgrade can lift it, so a numpy 2.x PR is permanent
+      # noise. The "version-update:" prefix scopes this to VERSION updates -- a
+      # numpy SECURITY advisory still opens a PR, which is what you want in a
+      # security vendor's public repo. Never use a bare `versions:` range here;
+      # that suppresses security updates too.
+      - dependency-name: "numpy"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels: ["dependencies", "ci"]
+    groups:
+      actions:
+        patterns: ["*"]

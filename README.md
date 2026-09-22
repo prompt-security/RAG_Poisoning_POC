@@ -93,6 +93,9 @@ ragpoc/
 ## Quick Start
 
 ### For Local LLM Inference (Full Setup + LlamaCpp Inference)
+Installs the `local` extra, which adds `llama-cpp-python`. That package has no
+universal wheel and builds from source, so this path needs **cmake and the Xcode
+command line tools** (macOS) or a working C/C++ toolchain.
 ```bash
 # Make setup script executable and run
 chmod +x setup.sh
@@ -106,9 +109,11 @@ python3 test_setup.py
 ```
 
 ### For Remote Inference Only (DeepSeek/Ollama)
-If you plan to use only DeepSeek or Ollama for inference and don't need the local LLM model:
+Use this path if you plan to use only DeepSeek or Ollama for inference and don't
+need a local LLM. It is the lighter option: it skips the ~4GB model download
+**and** skips `llama-cpp-python` entirely, so no compiler toolchain is required.
 ```bash
-# Skip local LLM download to save ~4GB disk space
+# Skip the local LLM download and the llama-cpp-python source build
 chmod +x setup.sh
 ./setup.sh --no-local
 
@@ -188,6 +193,21 @@ The complete research paper is contained in `research_paper/index.qmd` and organ
 - **Ollama:** Ollama server (local or remote) with URL and model configured in `.env`
 - **DeepSeek:** Valid API key configured in `.keys` file (copy from `.keys.example`)
 - Both options significantly reduce local storage requirements
+
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0**
+(`AGPL-3.0-only`). The full text is in [LICENSE](LICENSE).
+
+Copyright (C) 2025-2026 Prompt Security
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See [LICENSE](LICENSE) for details.
 
 ---
 

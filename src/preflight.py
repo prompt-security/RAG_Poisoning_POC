@@ -416,9 +416,10 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
         ("langchain_community", "langchain-community"),
         ("langchain_openai", "langchain-openai"),
         # RAGSystem imports RetrievalQA from here (langchain 1.x moved it out
-        # of `langchain` itself). It's not in requirements.txt -- it only
-        # rides in transitively via langchain-community -- so it can vanish
-        # on a future bump with langchain/langchain-community still resolving.
+        # of `langchain` itself). It's not a declared dependency in
+        # pyproject.toml -- it only rides in transitively via
+        # langchain-community -- so it can vanish on a future bump with
+        # langchain/langchain-community still resolving cleanly.
         ("langchain_classic", "langchain-classic"),
         ("chromadb", "chromadb"),
         ("sentence_transformers", "sentence-transformers"),
@@ -430,25 +431,41 @@ def check_pydeps(local_required: bool = False) -> List[Result]:
     for module, dist in wanted:
         if importlib.util.find_spec(module) is None:
             missing.append(dist)
+    # Needed twice below, and the bare-sync hazard depends on it.
+    has_llama = importlib.util.find_spec("llama_cpp") is not None
+
     if missing:
+        # Which sync to recommend turns on two things, not one.
+        #
+        # `--extra local` would drag in llama-cpp-python's source build for
+        # someone who was never going to use it, so the bare sync is right for
+        # the endpoint-only majority. BUT `uv sync` is EXACT: it uninstalls
+        # anything outside the resolved set. Handing a bare sync to someone who
+        # already has the local extra would silently remove llama-cpp-python
+        # and break --infer cpu/darwin -- a repair that breaks a working path
+        # is worse than the problem it fixes.
+        #
+        # So keep the extra whenever the local path is either explicitly
+        # selected OR already installed, and only then.
+        sync = "uv sync --extra local" if (local_required or has_llama) else "uv sync"
         results.append(Result(
             FAIL, "Project dependencies",
             "Not importable: %s" % ", ".join(missing),
-            ["uv sync", "source .venv/bin/activate"]))
+            [sync, "source .venv/bin/activate"]))
     else:
         results.append(Result(OK, "Project dependencies",
                               "langchain, chromadb, sentence-transformers present"))
 
     # llama-cpp-python is only needed for the in-process local path -- but if
     # that IS the selected path, its absence is fatal, not advisory.
-    if importlib.util.find_spec("llama_cpp") is None:
+    if not has_llama:
         results.append(Result(
             FAIL if local_required else WARN, "llama-cpp-python",
             "Required for the selected in-process GGUF path (--infer cpu/darwin)."
             if local_required else
             "Absent, so --infer cpu/darwin cannot run. Only needed for the "
             "in-process GGUF path; endpoint providers do not use it.",
-            ["uv pip install llama-cpp-python"]))
+            ["uv sync --extra local"]))
     else:
         results.append(Result(OK, "llama-cpp-python", "in-process GGUF path available"))
     return results

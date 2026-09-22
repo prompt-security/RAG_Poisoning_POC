@@ -44,9 +44,21 @@ fi
 
 echo "✅ uv is installed"
 
-# Create virtual environment and install dependencies from pyproject.toml
+# Create virtual environment and install dependencies from pyproject.toml.
+# --no-local means no in-process llama-cpp-python path, so skip it entirely:
+# it builds from source and hard-fails without cmake + Xcode CLT, even for
+# people who only ever talk to a remote endpoint.
 echo "📦 Creating virtual environment and installing dependencies..."
-uv sync --python=3.11
+# --locked: install exactly what uv.lock pins and fail loudly if the lock has
+# drifted from pyproject.toml, rather than silently re-resolving. A workshop
+# room must all get the same versions, and "the versions CI tested" is the only
+# set anyone has verified. CI keeps the lock in sync, so this cannot fire on a
+# clean checkout of main.
+if [ "$NO_LOCAL" = true ]; then
+    uv sync --locked --python=3.11
+else
+    uv sync --locked --python=3.11 --extra local
+fi
 source .venv/bin/activate
 
 # Define default values for environment variables if not set
