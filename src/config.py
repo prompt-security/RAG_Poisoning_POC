@@ -83,7 +83,8 @@ class Config:
     
     @property
     def ollama_base_url(self):
-        return os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+        # llm_factory appends /v1, so a trailing slash would become //v1.
+        return os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').strip().rstrip('/')
     
     @property
     def ollama_model(self):
@@ -92,7 +93,8 @@ class Config:
     @property
     def openai_compat_base_url(self):
         """Bare origin of any OpenAI-compatible server (no /v1 suffix)."""
-        return os.getenv('OPENAI_COMPAT_BASE_URL', 'http://localhost:8080')
+        # llm_factory appends /v1, so a trailing slash would become //v1.
+        return os.getenv('OPENAI_COMPAT_BASE_URL', 'http://localhost:8080').strip().rstrip('/')
 
     @property
     def openai_compat_model(self):

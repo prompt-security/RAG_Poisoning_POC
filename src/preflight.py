@@ -1066,11 +1066,19 @@ def next_step(results: List[Result]) -> Optional[str]:
     return None
 
 
-def check_viable_path(results: List[Result]) -> Optional[Result]:
+def check_viable_path(results: List[Result],
+                      env: Optional[Dict[str, str]] = None) -> Optional[Result]:
     """
     Generalises the false-success findings: a survey run must not claim success
     unless at least ONE inference path is actually usable end to end. Individual
     engines being down is fine -- having no working path at all is not.
+
+    The remediation names the endpoints .env points at and sends the reader to
+    the per-provider check, which prints the exact start command for that
+    engine. It used to suggest `--install ollama --run` and `--download
+    phi-4-mini` unconditionally: wrong for the endpoint-only majority, whose
+    --no-local install cannot load a GGUF and whose engine may well be
+    llama-server or LM Studio.
     """
     def ok(title: str) -> bool:
         return any(r.title == title and r.status == OK for r in results)
@@ -1079,14 +1087,23 @@ def check_viable_path(results: List[Result]) -> Optional[Result]:
     endpoint_ok = ok("Completion round-trip")
     if local_ok or endpoint_ok:
         return None
+    env = env or {}
+    compat = redact_url((env.get("OPENAI_COMPAT_BASE_URL")
+                         or "http://localhost:8080").strip().rstrip("/"))
+    ollama = redact_url((env.get("OLLAMA_BASE_URL")
+                         or "http://localhost:11434").strip().rstrip("/"))
+    fix = ["python3 src/preflight.py --provider openai-compat  # llama-server / LM Studio at %s" % compat,
+           "python3 src/preflight.py --provider ollama  # Ollama at %s" % ollama]
+    if ok("llama-cpp-python"):
+        # Only an install with the local extra can use a downloaded GGUF.
+        fix.append("python3 src/preflight.py --download phi-4-mini  # in-process GGUF path")
     return Result(
-        FAIL, "No runnable inference path",
-        "Neither the in-process GGUF path (llama-cpp-python + a local GGUF) nor "
-        "any OpenAI-compatible endpoint is usable, so the demo cannot run "
-        "whichever --infer you pick.",
-        ["python3 src/preflight.py --install ollama --run",
-         "python3 src/preflight.py --download phi-4-mini",
-         "# or start one: llama-server -hf bartowski/microsoft_Phi-4-mini-instruct-GGUF:Q4_K_M -c 4096 -np 1 --port 8080"])
+        FAIL, "No runnable inference path (nothing answered at %s or %s)" % (compat, ollama),
+        "Neither an endpoint nor the in-process GGUF path (llama-cpp-python + a "
+        "local GGUF) is usable, so the demo cannot run whichever --infer you "
+        "pick. Start your endpoint, then run the --provider check for it: it "
+        "probes the URL in .env and prints the exact start command.",
+        fix)
 
 
 def resolve_env() -> Dict[str, str]:
@@ -1127,7 +1144,7 @@ def run_checks(provider: Optional[str], deep: bool) -> List[Result]:
         results.extend(check_lmstudio(env, deep, explicit=provider == "lmstudio"))
 
     if provider is None:
-        viable = check_viable_path(results)
+        viable = check_viable_path(results, env)
         if viable is not None:
             results.append(viable)
     return results
