@@ -1073,12 +1073,15 @@ def check_viable_path(results: List[Result],
     unless at least ONE inference path is actually usable end to end. Individual
     engines being down is fine -- having no working path at all is not.
 
-    The remediation names the endpoints .env points at and sends the reader to
-    the per-provider check, which prints the exact start command for that
-    engine. It used to suggest `--install ollama --run` and `--download
-    phi-4-mini` unconditionally: wrong for the endpoint-only majority, whose
-    --no-local install cannot load a GGUF and whose engine may well be
-    llama-server or LM Studio.
+    The remediation is the per-provider check for each engine, which probes
+    the URL from .env verbatim and names the exact fix (start command, model
+    to pull, model id to load). It used to suggest `--install ollama --run`
+    and `--download phi-4-mini` unconditionally: wrong for the endpoint-only
+    majority, whose --no-local install cannot load a GGUF and whose engine may
+    well be llama-server or LM Studio. The title stays generic on purpose --
+    an unfiltered survey only probes OPENAI_COMPAT_BASE_URL on the
+    conventional ports, and an endpoint can answer yet fail the completion,
+    so "nothing answered at <url>" would often be false.
     """
     def ok(title: str) -> bool:
         return any(r.title == title and r.status == OK for r in results)
@@ -1092,17 +1095,21 @@ def check_viable_path(results: List[Result],
                          or "http://localhost:8080").strip().rstrip("/"))
     ollama = redact_url((env.get("OLLAMA_BASE_URL")
                          or "http://localhost:11434").strip().rstrip("/"))
-    fix = ["python3 src/preflight.py --provider openai-compat  # llama-server / LM Studio at %s" % compat,
-           "python3 src/preflight.py --provider ollama  # Ollama at %s" % ollama]
+    fix = ["python3 src/preflight.py --provider llama-server  # checks OPENAI_COMPAT_BASE_URL=%s" % compat,
+           "python3 src/preflight.py --provider lmstudio  # checks OPENAI_COMPAT_BASE_URL=%s" % compat,
+           "python3 src/preflight.py --provider ollama  # checks OLLAMA_BASE_URL=%s" % ollama]
     if ok("llama-cpp-python"):
-        # Only an install with the local extra can use a downloaded GGUF.
-        fix.append("python3 src/preflight.py --download phi-4-mini  # in-process GGUF path")
+        # Only an install with the local extra can use a downloaded GGUF, and
+        # it has to be the file LLAMA_MODEL_PATH names or check_gguf stays red.
+        fix.extend(_download_fix(env.get("LLAMA_MODEL_PATH",
+                                         "./models/llm/Phi-3.5-mini-instruct.Q4_K_M.gguf")))
     return Result(
-        FAIL, "No runnable inference path (nothing answered at %s or %s)" % (compat, ollama),
-        "Neither an endpoint nor the in-process GGUF path (llama-cpp-python + a "
-        "local GGUF) is usable, so the demo cannot run whichever --infer you "
-        "pick. Start your endpoint, then run the --provider check for it: it "
-        "probes the URL in .env and prints the exact start command.",
+        FAIL, "No runnable inference path",
+        "No endpoint returned a usable completion and the in-process GGUF path "
+        "(llama-cpp-python + a local GGUF) is not set up, so the demo cannot run "
+        "whichever --infer you pick. Run the --provider check for your engine: it "
+        "probes the URL from .env (OPENAI_COMPAT_BASE_URL=%s, OLLAMA_BASE_URL=%s) "
+        "and prints the exact fix." % (compat, ollama),
         fix)
 
 

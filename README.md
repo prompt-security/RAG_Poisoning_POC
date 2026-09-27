@@ -126,7 +126,8 @@ Attack success rate: 100.0%
 - The POISONED/CLEAN label is a simple keyword check for six pirate words (`arrr`, `matey`, `ye`,
   `hearty`, `savvy`, `nautical`). A different planted persona (haiku, a disclaimer) is scored CLEAN
   even when it worked, so read the `Response:` lines.
-- Answers are capped at 128 tokens at temperature 0, so long answers stop mid-sentence.
+- On the endpoint providers (`openai-compat`, `ollama`) answers are capped at 128 tokens at
+  temperature 0, so long answers stop mid-sentence.
 - With the default `TOP_K_RETRIEVAL=4` and a 4-document corpus, every document is retrieved for
   every query. Set a lower value (`TOP_K_RETRIEVAL=1 python3 src/rag_poisoning_demo.py …`) to see
   retrieval decide which queries the poisoned document reaches.
@@ -145,7 +146,7 @@ flowchart TD
         QE --> S[Similarity search<br/>top-k = TOP_K_RETRIEVAL]
         V --> S
         S --> T["RetrievalQA, chain_type=stuff<br/>retrieved documents pasted into the system message"]
-        T --> L[LLM<br/>temperature 0, 128 tokens]
+        T --> L[LLM<br/>endpoint providers: temperature 0, 128 tokens]
         L --> D[Response + Sources + pirate-word check]
     end
 ```
@@ -168,11 +169,11 @@ prompt truncation.
 | Symptom | Fix |
 |---|---|
 | `Project dependencies` FAIL right after setup succeeded | Activate the venv: `source .venv/bin/activate` |
-| `No runnable inference path` | Your endpoint isn't answering. Start it, then run `python3 src/preflight.py --provider openai-compat` (or `ollama`) |
+| `No runnable inference path` | No endpoint gave a usable answer. Run the check for your engine — `python3 src/preflight.py --provider llama-server` (or `lmstudio`, `ollama`) — and apply the fix it prints |
 | The demo says no endpoint was selected | Add `--infer openai-compat` (llama-server, LM Studio) or `--infer ollama` |
 | 404 from the endpoint | The base URL has a path such as `/v1` — use the bare origin. On LM Studio, check the model id; on Ollama, `ollama pull` the model |
 | "couldn't connect to huggingface.co" / offline error | The demo runs offline and only reads the embedding model from `./models/embedding`: run from the repo root, and re-run `./setup.sh --no-local` if it's missing |
-| Certificate errors during setup (corporate proxy) | `UV_SYSTEM_CERTS=1 ./setup.sh --no-local` |
+| Certificate errors during setup (corporate proxy) | `UV_SYSTEM_CERTS=1 ./setup.sh --no-local` (older uv: `UV_NATIVE_TLS=1`). If the embedding-model download still fails, `export SSL_CERT_FILE=<your corporate CA bundle>` first |
 | Build errors mentioning cmake or llama-cpp-python | Use `./setup.sh --no-local`, or install cmake and a C/C++ toolchain for the in-process path |
 
 ## Optional: in-process model (no server)
@@ -186,8 +187,12 @@ python3 src/rag_poisoning_demo.py                 # auto-selects CUDA, Apple Sil
 python3 src/rag_poisoning_demo.py --infer darwin  # or force: cpu, cuda, darwin
 ```
 
-`python3 src/preflight.py --download phi-4-mini` fetches an alternative ungated GGUF with a pinned
-checksum.
+To use Phi-4-mini instead, fetch it (ungated, checksum-pinned) and point `.env` at it:
+
+```bash
+python3 src/preflight.py --download phi-4-mini
+python3 src/preflight.py --write-env local --model phi-4-mini
+```
 
 ## Configuration
 
@@ -201,7 +206,8 @@ checksum.
 | `LLAMA_MODEL_PATH` | `./models/llm/Phi-3.5-mini-instruct.Q4_K_M.gguf` | In-process GGUF |
 | `LOG_LEVEL` | `WARN` | `INFO` also writes per-query results to `logs/rag_demo.log` |
 
-A variable set in your shell overrides `.env` for that run.
+A variable set in your shell overrides `.env` for the demo and preflight. `setup.sh` is the exception:
+it reads `.env` itself, so for setup the `.env` values win.
 
 ## Tech stack
 

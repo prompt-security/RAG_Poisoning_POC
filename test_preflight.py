@@ -173,25 +173,29 @@ class TestRemediationIsActionable(unittest.TestCase):
         res = preflight.check_gguf({"LLAMA_MODEL_PATH": "/tmp/custom.gguf"})
         self.assertTrue(any("--write-env" in c for c in res.fix), res.fix)
 
-    def test_no_usable_path_names_the_configured_endpoints(self):
+    def test_no_usable_path_points_at_each_engine_check(self):
         # It used to say `--install ollama --run; --download phi-4-mini`
         # whatever the setup -- wrong for a --no-local llama-server user.
         env = {"OPENAI_COMPAT_BASE_URL": "http://10.1.2.3:9000/",
                "OLLAMA_BASE_URL": "http://localhost:11434"}
         res = preflight.check_viable_path([], env)
         self.assertEqual(res.status, FAIL)
-        self.assertIn("http://10.1.2.3:9000", res.title)
-        self.assertIn("http://localhost:11434", res.title)
+        self.assertEqual(res.title, "No runnable inference path")
+        for provider in ("llama-server", "lmstudio", "ollama"):
+            self.assertTrue(any("--provider %s" % provider in c for c in res.fix), res.fix)
+        # The configured URLs are named, in the detail and the fix comments.
+        self.assertIn("http://10.1.2.3:9000", res.detail)
+        self.assertIn("http://localhost:11434", res.detail)
         joined = " ".join(res.fix)
-        self.assertIn("--provider openai-compat", joined)
-        self.assertIn("--provider ollama", joined)
         self.assertNotIn("--install", joined)
         self.assertNotIn("--download", joined)
 
-    def test_no_usable_path_offers_a_download_only_with_the_local_extra(self):
+    def test_no_usable_path_download_matches_the_configured_gguf(self):
+        # Offered only with the local extra, and it must be the file
+        # LLAMA_MODEL_PATH names, or check_gguf stays red after following it.
         results = [preflight.Result(OK, "llama-cpp-python", "in-process GGUF path available")]
         res = preflight.check_viable_path(results, {})
-        self.assertTrue(any("--download" in c for c in res.fix), res.fix)
+        self.assertIn("python3 src/preflight.py --download phi-3.5-mini", res.fix)
 
     def test_no_usable_path_one_line_is_runnable(self):
         res = preflight.check_viable_path([], {})
@@ -200,9 +204,10 @@ class TestRemediationIsActionable(unittest.TestCase):
             rc = preflight.report_one_line([res], {})
         line = buf.getvalue().strip()
         self.assertEqual(rc, 1)
-        self.assertTrue(line.startswith("PREFLIGHT FAIL: No runnable inference path"), line)
-        self.assertIn("python3 src/preflight.py --provider openai-compat;", line)
-        self.assertNotIn("#", line)
+        self.assertEqual(line, "PREFLIGHT FAIL: No runnable inference path -- "
+                               "python3 src/preflight.py --provider llama-server; "
+                               "python3 src/preflight.py --provider lmstudio; "
+                               "python3 src/preflight.py --provider ollama")
 
     def test_no_usable_path_does_not_print_credentials(self):
         env = {"OPENAI_COMPAT_BASE_URL": "https://user:secrettoken@127.0.0.1:1234?api_key=x"}
