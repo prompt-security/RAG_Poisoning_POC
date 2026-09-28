@@ -40,7 +40,7 @@ dependencies = [
     "huggingface-hub>=0.20.0",
 
     # Configuration
-    "python-dotenv==1.2.2",
+    "python-dotenv==1.2.3",
 
     # Web scraping for llms.txt downloader
     "httpx>=0.26.0",
