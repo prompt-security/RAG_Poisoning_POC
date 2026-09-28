@@ -169,6 +169,7 @@ prompt truncation.
 | Symptom | Fix |
 |---|---|
 | `Project dependencies` FAIL right after setup succeeded | Activate the venv: `source .venv/bin/activate` |
+| `OPENAI_COMPAT_BASE_URL` / `OLLAMA_BASE_URL` `is not a bare origin` or `is unparseable` | The base URL has a path such as `/v1`, or no `http://`. Put the value printed after `--` in `.env` |
 | `No runnable inference path` | No endpoint gave a usable answer. Run the check for your engine — `python3 src/preflight.py --provider llama-server` (or `lmstudio`, `ollama`) — and apply the fix it prints |
 | The demo says no endpoint was selected | Add `--infer openai-compat` (llama-server, LM Studio) or `--infer ollama` |
 | 404 from the endpoint | The base URL has a path such as `/v1` — use the bare origin. On LM Studio, check the model id; on Ollama, `ollama pull` the model |
