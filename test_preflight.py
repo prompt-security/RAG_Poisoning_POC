@@ -57,6 +57,27 @@ def dead_port():
     return port
 
 
+@contextlib.contextmanager
+def patched(**attrs):
+    """Temporarily replace attributes of the preflight module."""
+    saved = {name: getattr(preflight, name) for name in attrs}
+    for name, value in attrs.items():
+        setattr(preflight, name, value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(preflight, name, value)
+
+
+def one_line(results, provider=None):
+    """(exit status, printed line) of report_one_line."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = preflight.report_one_line(results, {}, provider)
+    return rc, buf.getvalue().strip()
+
+
 class TestBadModelDetection(unittest.TestCase):
     """A separator list containing "" once reduced this to a substring test."""
 
@@ -322,6 +343,170 @@ class TestEndpointUrlHandling(unittest.TestCase):
         self.assertIsNone(preflight.check_base_url_shape(
             {"OPENAI_COMPAT_BASE_URL": "http://host:8080"}))
 
+    def test_a_path_bearing_ollama_base_url_is_flagged(self):
+        # llm_factory appends /v1 to OLLAMA_BASE_URL too, and preflight's own
+        # probe becomes /v1/api/tags -- which "answers" with a 404, so the old
+        # report blamed an unpulled model instead.
+        res = preflight.check_base_url_shape(
+            {"OLLAMA_BASE_URL": "http://host:11434/v1"}, "OLLAMA_BASE_URL")
+        self.assertIsNotNone(res)
+        self.assertEqual(res.status, WARN)
+        self.assertEqual(res.title, "OLLAMA_BASE_URL is not a bare origin")
+        self.assertEqual(res.fix, ["OLLAMA_BASE_URL=http://host:11434"])
+        # The wording must be true for Ollama: it names the /api/tags probe,
+        # not the OpenAI-compatible /v1/models one.
+        self.assertIn("/api/tags", res.detail)
+
+    def test_ollama_check_reads_only_ollama_base_url(self):
+        for env in ({}, {"OLLAMA_BASE_URL": ""},
+                    {"OLLAMA_BASE_URL": "http://host:11434/"},
+                    {"OPENAI_COMPAT_BASE_URL": "http://host:8080/v1"}):
+            with self.subTest(env=env):
+                self.assertIsNone(
+                    preflight.check_base_url_shape(env, "OLLAMA_BASE_URL"))
+
+    def _shape_titles(self, provider):
+        env = {"OPENAI_COMPAT_BASE_URL": "http://localhost:9/v1",
+               "OLLAMA_BASE_URL": "http://localhost:9/v1"}
+        def no_probe(*_args, **_kwargs):
+            return []   # touch no socket at all
+
+        with patched(resolve_env=lambda: dict(env), check_ollama=no_probe,
+                     check_llama_server=no_probe, check_lmstudio=no_probe):
+            results = preflight.run_checks(provider, False)
+        return [r.title for r in results if r.title.endswith("not a bare origin")]
+
+    def test_ollama_base_url_is_checked_only_when_ollama_is(self):
+        both = ["OPENAI_COMPAT_BASE_URL is not a bare origin",
+                "OLLAMA_BASE_URL is not a bare origin"]
+        for provider in (None, "ollama"):
+            with self.subTest(provider=provider):
+                self.assertEqual(self._shape_titles(provider), both)
+        # The OPENAI_COMPAT check keeps running for every provider, as before.
+        for provider in ("llama-server", "openai-compat", "lmstudio", "local"):
+            with self.subTest(provider=provider):
+                self.assertEqual(self._shape_titles(provider), both[:1])
+
+
+class TestOneLineNamesTheBaseUrlShape(unittest.TestCase):
+    """
+    A base URL with a path (http://localhost:8080/v1) makes the endpoint checks
+    fail under names that point elsewhere, while the shape check that explains
+    them is only a WARN. --one-line printed just the first FAIL, so the roster
+    line said "No runnable inference path" in a survey, or "Completion returned
+    HTTP 404 -- see the full report" for one provider, and never named the URL.
+    """
+
+    def shape_line(self, var, origin):
+        return "PREFLIGHT FAIL: %s is not a bare origin -- %s=%s" % (var, var, origin)
+
+    def test_survey_names_the_path_instead_of_no_runnable_path(self):
+        env = {"OPENAI_COMPAT_BASE_URL": "http://localhost:8080/v1"}
+        results = [preflight.Result(OK, "Python 3.11.9"),
+                   preflight.Result(OK, "Project dependencies"),
+                   preflight.check_base_url_shape(env),
+                   preflight.check_viable_path([], env)]
+        self.assertEqual(one_line(results),
+                         (1, self.shape_line("OPENAI_COMPAT_BASE_URL",
+                                             "http://localhost:8080")))
+
+    def test_survey_names_an_ollama_path_too(self):
+        env = {"OLLAMA_BASE_URL": "http://localhost:11434/v1"}
+        results = [preflight.check_base_url_shape(env, "OLLAMA_BASE_URL"),
+                   preflight.check_viable_path([], env)]
+        self.assertEqual(one_line(results),
+                         (1, self.shape_line("OLLAMA_BASE_URL",
+                                             "http://localhost:11434")))
+
+    def test_explicit_provider_names_the_variable_it_reads(self):
+        base = "http://127.0.0.1:%d" % dead_port()
+        compat = {"OPENAI_COMPAT_BASE_URL": base + "/v1"}
+        ollama = {"OLLAMA_BASE_URL": base + "/v1"}
+        cases = [("llama-server", compat, preflight.check_llama_server),
+                 ("openai-compat", compat, preflight.check_llama_server),
+                 ("lmstudio", compat, preflight.check_lmstudio),
+                 ("ollama", ollama, preflight.check_ollama)]
+        for provider, env, check in cases:
+            with self.subTest(provider=provider):
+                var = preflight.BASE_URL_VARS[provider]
+                results = [preflight.check_base_url_shape(env, var)]
+                results += check(env, False, explicit=True)
+                self.assertTrue(has_fail(results))
+                self.assertEqual(one_line(results, provider),
+                                 (1, self.shape_line(var, base)))
+
+    def test_explicit_provider_ignores_the_variable_it_does_not_read(self):
+        dead = "http://127.0.0.1:%d" % dead_port()
+        env = {"OPENAI_COMPAT_BASE_URL": dead + "/v1", "OLLAMA_BASE_URL": dead}
+        results = [preflight.check_base_url_shape(env)]
+        results += preflight.check_ollama(env, False, explicit=True)
+        rc, line = one_line(results, "ollama")
+        self.assertEqual(rc, 1)
+        self.assertNotIn("OPENAI_COMPAT_BASE_URL", line)
+        first = next(r for r in results if r.status == FAIL)
+        self.assertTrue(line.startswith("PREFLIGHT FAIL: %s -- " % first.title), line)
+
+        env = {"OPENAI_COMPAT_BASE_URL": dead, "OLLAMA_BASE_URL": dead + "/v1"}
+        results = [preflight.check_base_url_shape(env, "OLLAMA_BASE_URL")]
+        results += preflight.check_llama_server(env, False, explicit=True)
+        rc, line = one_line(results, "llama-server")
+        self.assertEqual(rc, 1)
+        self.assertNotIn("OLLAMA_BASE_URL", line)
+
+    def test_prerequisite_failures_are_not_masked(self):
+        # They come first, a base URL cannot cause them, and each has its own
+        # fix. Real check output where it is cheap to produce, so a renamed
+        # title breaks this test instead of silently losing precedence.
+        env = {"OPENAI_COMPAT_BASE_URL": "http://localhost:8080/v1",
+               "OLLAMA_BASE_URL": "http://localhost:11434/v1"}
+        tail = [preflight.check_base_url_shape(env),
+                preflight.check_base_url_shape(env, "OLLAMA_BASE_URL"),
+                preflight.check_viable_path([], env)]
+        with tempfile.TemporaryDirectory() as tmp:
+            def fake(name, head, size):
+                path = os.path.join(tmp, name)
+                with open(path, "wb") as fh:
+                    fh.write(head)
+                    fh.truncate(size)   # sparse: no real 600 MB write
+                return {"LLAMA_MODEL_PATH": path}
+
+            known = preflight.UNGATED_MODELS["phi-4-mini"].filename
+            prereqs = [
+                # check_python cannot be made to fail on a supported interpreter.
+                preflight.Result(FAIL, "Python 3.8.18", "", ["uv venv --python=3.11"]),
+                preflight.Result(FAIL, "Project dependencies", "",
+                                 ["uv sync", "source .venv/bin/activate"]),
+                preflight.check_embedding_cache({"SENTENCE_TRANSFORMERS_HOME": tmp}),
+                preflight.check_gguf({"LLAMA_MODEL_PATH": "/nonexistent/m.gguf"},
+                                     explicit=True),
+                preflight.check_gguf(fake("small.gguf", b"GGUF", 1024)),
+                preflight.check_gguf(fake(known, b"GGUF", 600 * 1024 * 1024)),
+                preflight.check_gguf(fake("notgguf.gguf", b"NOPE", 600 * 1024 * 1024)),
+            ]
+            prereqs += [r for r in preflight.check_pydeps(local_required=True)
+                        if r.status == FAIL]
+        for res in prereqs:
+            with self.subTest(title=res.title):
+                self.assertEqual(res.status, FAIL)
+                for provider in (None, "llama-server", "ollama", "local"):
+                    rc, line = one_line([res] + tail, provider)
+                    self.assertEqual(rc, 1)
+                    self.assertTrue(
+                        line.startswith("PREFLIGHT FAIL: %s -- " % res.title), line)
+
+    def test_a_pass_is_unchanged_by_a_shape_warning(self):
+        env = {"OLLAMA_BASE_URL": "http://localhost:11434/v1"}
+        results = [preflight.Result(OK, "Python 3.11.9"),
+                   preflight.check_base_url_shape(env, "OLLAMA_BASE_URL"),
+                   preflight.Result(OK, "llama-server responding", "http://localhost:8080"),
+                   preflight.Result(OK, "Completion round-trip",
+                                    "0.1s, model='local-model', said 'READY'",
+                                    provider="openai-compat")]
+        rc, line = one_line(results)
+        self.assertEqual(rc, 0)
+        self.assertTrue(line.startswith("PREFLIGHT PASS: "), line)
+        self.assertNotIn("BASE_URL", line)
+
 
 class TestCredentialsAreNotPrinted(unittest.TestCase):
     """
@@ -346,13 +531,28 @@ class TestCredentialsAreNotPrinted(unittest.TestCase):
         results += preflight.check_lmstudio(env, False, explicit=True)
         results += preflight.check_llama_server(env, False, explicit=True)
         results += preflight.check_ollama(env, False, explicit=True)
-        shape = preflight.check_base_url_shape(env)
-        if shape:
-            results.append(shape)
+        for var in ("OPENAI_COMPAT_BASE_URL", "OLLAMA_BASE_URL"):
+            shape = preflight.check_base_url_shape(env, var)
+            if shape:
+                results.append(shape)
         blob = json.dumps([r.as_dict() for r in results])
         self.assertNotIn(self.SECRET, blob)
         self.assertNotIn("alsosecret", blob)
         self.assertNotIn("#frag", blob)
+
+    def test_one_line_naming_a_base_url_is_redacted(self):
+        # The shape line quotes the URL, and this is the line that is pasted.
+        url = "https://user:%s@127.0.0.1:%d/v1?api_key=alsosecret#frag" % (
+            self.SECRET, dead_port())
+        env = {"OPENAI_COMPAT_BASE_URL": url, "OLLAMA_BASE_URL": url}
+        for var in ("OPENAI_COMPAT_BASE_URL", "OLLAMA_BASE_URL"):
+            with self.subTest(var=var):
+                results = [preflight.check_base_url_shape(env, var),
+                           preflight.check_viable_path([], env)]
+                _rc, line = one_line(results)
+                self.assertIn("%s is not a bare origin" % var, line)
+                for leak in (self.SECRET, "alsosecret", "frag"):
+                    self.assertNotIn(leak, line)
 
 
 class TestProbedModelMatchesTheDemo(unittest.TestCase):
@@ -389,6 +589,10 @@ class TestMalformedInputDoesNotCrash(unittest.TestCase):
         res = preflight.check_base_url_shape({"OPENAI_COMPAT_BASE_URL": "http://h:bad"})
         self.assertIsNotNone(res)
         self.assertEqual(res.status, WARN)
+        res = preflight.check_base_url_shape({"OLLAMA_BASE_URL": "http://h:bad"},
+                                             "OLLAMA_BASE_URL")
+        self.assertEqual(res.status, WARN)
+        self.assertEqual(res.fix, ["OLLAMA_BASE_URL=http://localhost:11434"])
 
     def test_non_object_config_json_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:

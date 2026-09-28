@@ -21,9 +21,12 @@ and survey-vs-explicit severity behave against a live-ish server.
 Standard-library only.
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
+import socket
 import sys
 import threading
 import unittest
@@ -43,6 +46,15 @@ def has_fail(results):
     return any(r.status == FAIL for r in results)
 
 
+def dead_port():
+    """A local port with nothing listening on it."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
 class _StubHandler(BaseHTTPRequestHandler):
     echo_codeword = True
     n_ctx = 4096
@@ -51,6 +63,8 @@ class _StubHandler(BaseHTTPRequestHandler):
     null_content = False      # a valid 2xx tool-call shape: content is null
     text_body = False         # 200 OK with a plain-text body
     ollama_tags = None        # serve /api/tags instead, for the Ollama shape
+    strict_paths = False      # POST 404s off /v1/chat/completions (e.g. /v1/v1/*),
+                              # as a real engine does; GET already 404s unknown paths
 
     def log_message(self, *_args):
         pass  # keep test output clean
@@ -88,6 +102,9 @@ class _StubHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length) or b"{}")
+        if type(self).strict_paths and self.path != "/v1/chat/completions":
+            self._send({"error": "not found"}, 404)
+            return
         if type(self).null_content:
             self._send({"choices": [{"message": {"role": "assistant",
                                                  "content": None}}]})
@@ -381,6 +398,91 @@ class TestOllamaContextLengthSourcing(unittest.TestCase):
                                            "OLLAMA_MODEL": "phi4-mini"})
         self.assertEqual([r.status for r in found], [WARN])
         self.assertIn("not raised", found[0].title)
+
+
+class TestOneLineNamesAPathBearingBaseUrl(unittest.TestCase):
+    """
+    End to end through main(), against a stub that 404s /v1/v1/* the way a real
+    engine does. With a base URL ending in /v1 the roster line used to say "No
+    runnable inference path" (survey), "Completion returned HTTP 404 -- see the
+    full report" (--provider llama-server) or "OLLAMA_MODEL not pulled -- ollama
+    pull phi4-mini" (--provider ollama), and never named the URL.
+
+    The prerequisite checks are stood in for: a bare runner has neither the
+    dependencies nor the embedding cache, and those FAILs rightly win the line.
+    """
+
+    def run_main(self, argv, env, **attrs):
+        def pydeps(local_required=False):
+            return [preflight.Result(OK, "Project dependencies", "stand-in"),
+                    preflight.Result(WARN, "llama-cpp-python", "stand-in")]
+
+        attrs = dict(resolve_env=lambda: dict(env), check_pydeps=pydeps,
+                     check_embedding_cache=lambda _env: preflight.Result(
+                         OK, "Embedding model cached", "stand-in"),
+                     **attrs)
+        saved = {name: getattr(preflight, name) for name in attrs}
+        saved_argv = sys.argv
+        buf = io.StringIO()
+        try:
+            for name, value in attrs.items():
+                setattr(preflight, name, value)
+            sys.argv = ["preflight.py"] + argv
+            with contextlib.redirect_stdout(buf):
+                rc = preflight.main()
+        finally:
+            sys.argv = saved_argv
+            for name, value in saved.items():
+                setattr(preflight, name, value)
+        return rc, buf.getvalue()
+
+    def assert_one_line_names(self, argv, env, var, origin, **attrs):
+        rc, out = self.run_main(argv + ["--one-line"], env, **attrs)
+        self.assertEqual((rc, out), (1, "PREFLIGHT FAIL: %s is not a bare origin "
+                                        "-- %s=%s\n" % (var, var, origin)))
+        # Only the one-line changes: the full results still list the shape
+        # WARN and the endpoint FAIL it explains, and the exit status holds.
+        rc, out = self.run_main(argv + ["--json"], env, **attrs)
+        results = json.loads(out)["results"]
+        self.assertEqual(rc, 1)
+        self.assertIn(WARN, [r["status"] for r in results
+                             if r["title"] == "%s is not a bare origin" % var])
+        self.assertIn(FAIL, [r["status"] for r in results])
+
+    def test_survey_with_llama_server_on_its_conventional_port(self):
+        # The reported case: llama-server up on :8080 and .env saying .../v1.
+        # DEFAULT_PORTS aims the survey at the stub as it would at a real :8080
+        # (binding 8080 itself is unreliable on a dev machine), and LM Studio's
+        # conventional port at a closed one.
+        with StubServer(strict_paths=True) as stub:
+            env = {"OPENAI_COMPAT_BASE_URL": stub.base + "/v1",
+                   "OLLAMA_BASE_URL": "http://127.0.0.1:%d" % dead_port(),
+                   "LLAMA_MODEL_PATH": "/nonexistent/model.gguf"}
+            ports = dict(preflight.DEFAULT_PORTS)
+            ports.update({"llama-server": stub.port, "lmstudio": dead_port()})
+            self.assert_one_line_names([], env, "OPENAI_COMPAT_BASE_URL",
+                                       stub.base, DEFAULT_PORTS=ports)
+
+    def test_explicit_llama_server(self):
+        with StubServer(strict_paths=True) as stub:
+            env = {"OPENAI_COMPAT_BASE_URL": stub.base + "/v1"}
+            self.assert_one_line_names(["--provider", "llama-server"], env,
+                                       "OPENAI_COMPAT_BASE_URL", stub.base)
+
+    def test_explicit_ollama(self):
+        with StubServer(strict_paths=True, ollama_tags=("phi4-mini:latest",)) as stub:
+            env = {"OLLAMA_BASE_URL": stub.base + "/v1", "OLLAMA_MODEL": "phi4-mini"}
+            self.assert_one_line_names(["--provider", "ollama"], env,
+                                       "OLLAMA_BASE_URL", stub.base)
+
+    def test_the_same_stub_passes_with_a_bare_origin(self):
+        # Control: the strict stub is a working engine, so the FAIL above is
+        # the path and nothing else.
+        with StubServer(strict_paths=True) as stub:
+            rc, out = self.run_main(["--provider", "llama-server", "--one-line"],
+                                    {"OPENAI_COMPAT_BASE_URL": stub.base})
+        self.assertEqual(rc, 0)
+        self.assertTrue(out.startswith("PREFLIGHT PASS: "), out)
 
 
 class TestNextStepAgainstALiveEndpoint(unittest.TestCase):
