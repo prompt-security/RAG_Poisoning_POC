@@ -25,6 +25,8 @@ Standard-library only, like preflight itself, so it runs on a bare interpreter
 with no venv and no install step.
 """
 
+import contextlib
+import io
 import json
 import os
 import socket
@@ -171,6 +173,47 @@ class TestRemediationIsActionable(unittest.TestCase):
         res = preflight.check_gguf({"LLAMA_MODEL_PATH": "/tmp/custom.gguf"})
         self.assertTrue(any("--write-env" in c for c in res.fix), res.fix)
 
+    def test_no_usable_path_points_at_each_engine_check(self):
+        # It used to say `--install ollama --run; --download phi-4-mini`
+        # whatever the setup -- wrong for a --no-local llama-server user.
+        env = {"OPENAI_COMPAT_BASE_URL": "http://10.1.2.3:9000/",
+               "OLLAMA_BASE_URL": "http://localhost:11434"}
+        res = preflight.check_viable_path([], env)
+        self.assertEqual(res.status, FAIL)
+        self.assertEqual(res.title, "No runnable inference path")
+        for provider in ("llama-server", "lmstudio", "ollama"):
+            self.assertTrue(any("--provider %s" % provider in c for c in res.fix), res.fix)
+        # The configured URLs are named, in the detail and the fix comments.
+        self.assertIn("http://10.1.2.3:9000", res.detail)
+        self.assertIn("http://localhost:11434", res.detail)
+        joined = " ".join(res.fix)
+        self.assertNotIn("--install", joined)
+        self.assertNotIn("--download", joined)
+
+    def test_no_usable_path_download_matches_the_configured_gguf(self):
+        # Offered only with the local extra, and it must be the file
+        # LLAMA_MODEL_PATH names, or check_gguf stays red after following it.
+        results = [preflight.Result(OK, "llama-cpp-python", "in-process GGUF path available")]
+        res = preflight.check_viable_path(results, {})
+        self.assertIn("python3 src/preflight.py --download phi-3.5-mini", res.fix)
+
+    def test_no_usable_path_one_line_is_runnable(self):
+        res = preflight.check_viable_path([], {})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = preflight.report_one_line([res], {})
+        line = buf.getvalue().strip()
+        self.assertEqual(rc, 1)
+        self.assertEqual(line, "PREFLIGHT FAIL: No runnable inference path -- "
+                               "python3 src/preflight.py --provider llama-server; "
+                               "python3 src/preflight.py --provider lmstudio; "
+                               "python3 src/preflight.py --provider ollama")
+
+    def test_no_usable_path_does_not_print_credentials(self):
+        env = {"OPENAI_COMPAT_BASE_URL": "https://user:secrettoken@127.0.0.1:1234?api_key=x"}
+        res = preflight.check_viable_path([], env)
+        self.assertNotIn("secrettoken", json.dumps(res.as_dict()))
+
 
 class TestCustomEndpointUrlIsHonoured(unittest.TestCase):
     """
@@ -256,6 +299,17 @@ class TestEndpointUrlHandling(unittest.TestCase):
                 env = {"OPENAI_COMPAT_BASE_URL": url}
                 preflight.check_lmstudio(env, False, explicit=True)   # must not raise
                 preflight.check_llama_server(env, False, explicit=True)
+
+    def test_padded_ollama_url_is_trimmed_like_config_py(self):
+        # config.py trims whitespace and a trailing slash; check_ollama only
+        # trimmed the slash, so a quoted or exported "http://host:11434/ "
+        # raised InvalidURL out of preflight while the demo ran fine.
+        base = "http://127.0.0.1:%d" % dead_port()
+        for url in (base + " ", " " + base, base + "/ "):
+            with self.subTest(url=url):
+                results = preflight.check_ollama({"OLLAMA_BASE_URL": url},
+                                                 False, explicit=True)
+                self.assertTrue(any(base in r.detail for r in results), results)
 
     def test_a_path_bearing_base_url_is_flagged(self):
         # config.py appends /v1 itself, so a path here becomes /v1/v1 and 404s.

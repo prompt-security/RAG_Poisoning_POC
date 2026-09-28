@@ -26,12 +26,15 @@ if [ "$NO_LOCAL" = true ]; then
     echo "🔧 Running in --no-local mode (skipping LLM download)"
 fi
 
-# Look for environment configuration files
+# Create .env from the template on first run, then load it. Everything the demo
+# and preflight read (endpoint URLs, model names, TOP_K_RETRIEVAL) lives there.
+if [ ! -f .env ] && [ -f .env.example ]; then
+    cp .env.example .env
+    echo "📄 No .env found -- created it from .env.example (point it at your endpoint)"
+fi
 if [ -f .env ]; then
     echo "📄 Loading environment variables from .env file..."
     source .env
-else
-    echo "📄 No environment file found, will create defaults..."
 fi
 
 # Check if uv is installed
@@ -150,14 +153,16 @@ echo "✅ Setup completed successfully!"
 echo ""
 echo "Next steps:"
 echo "1. Activate the virtual environment: source .venv/bin/activate"
-echo "2. Run the test: python3 test_setup.py (--no-local for remote inference only)"
+echo "2. Check your setup and endpoint: python3 src/preflight.py --one-line"
 if [ "$NO_LOCAL" = false ]; then
     echo "3. Run the demo with one of the following options:"
     echo "   - Local LLM: python3 src/rag_poisoning_demo.py"
+    echo "   - llama-server / LM Studio: python3 src/rag_poisoning_demo.py --infer openai-compat"
     echo "   - Ollama: python3 src/rag_poisoning_demo.py --infer ollama"
     echo "   - DeepSeek: python3 src/rag_poisoning_demo.py --infer deepseek"
     echo ""
     echo "📝 Notes:"
+    echo "   - For llama-server / LM Studio: set OPENAI_COMPAT_BASE_URL in .env (bare origin, no /v1)"
     echo "   - For Ollama: Ensure Ollama is running and configured in .env"
     echo "   - For DeepSeek: Ensure API key is set in .keys file"
     echo "   - All embedding models are downloaded locally for self-sustainability"
@@ -166,11 +171,13 @@ if [ "$NO_LOCAL" = false ]; then
     echo "   - Configuration: .env (environment variables loaded from this file)"
 else
     echo "3. Run the demo with one of the following options:"
+    echo "   - llama-server / LM Studio: python3 src/rag_poisoning_demo.py --infer openai-compat"
     echo "   - Ollama: python3 src/rag_poisoning_demo.py --infer ollama"
     echo "   - DeepSeek: python3 src/rag_poisoning_demo.py --infer deepseek"
     echo ""
     echo "📝 Notes:"
-    echo "   - Local LLM was skipped (--no-local mode)"
+    echo "   - Local LLM was skipped (--no-local mode), so always pass --infer"
+    echo "   - For llama-server / LM Studio: set OPENAI_COMPAT_BASE_URL in .env (bare origin, no /v1)"
     echo "   - For Ollama: Ensure Ollama is running and configured in .env"
     echo "   - For DeepSeek: Ensure API key is set in .keys file"
     echo "   - All embedding models are downloaded locally for self-sustainability"

@@ -7,7 +7,9 @@ to compromise RAG system behavior.
 
 import logging
 import argparse
+import importlib.util
 import os
+import sys
 from typing import Optional
 
 # Import our modular components (config.py handles warning suppression)
@@ -83,7 +85,21 @@ def main():
         # Map 'darwin' to 'mps' for torch
         device = 'mps' if args.infer == 'darwin' else args.infer
         provider = None
-    
+
+    # No endpoint provider means the in-process LlamaCpp path. Fail fast with
+    # the flags that actually apply, instead of LangChain's "pip install
+    # llama-cpp-python" deep in the stack after the embeddings have loaded.
+    if provider is None and importlib.util.find_spec("llama_cpp") is None:
+        print("❌ No endpoint selected (no --infer, or --infer cpu/cuda/darwin), so the demo\n"
+              "   would run the model in-process with llama-cpp-python, which this install\n"
+              "   doesn't have (./setup.sh --no-local skips it). Pick your endpoint instead:\n"
+              "     llama-server / LM Studio:  python3 src/rag_poisoning_demo.py --infer openai-compat\n"
+              "     Ollama:                    python3 src/rag_poisoning_demo.py --infer ollama\n"
+              "     DeepSeek (key in .keys):   python3 src/rag_poisoning_demo.py --infer deepseek\n"
+              "   Or set up the in-process path: ./setup.sh  (without --no-local; needs cmake and\n"
+              "   a C/C++ toolchain, and downloads a ~2.2 GB model)")
+        sys.exit(2)
+
     # Initialize and show configuration
     config = Config()
     config.print_config(provider)

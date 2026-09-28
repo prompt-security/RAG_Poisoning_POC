@@ -278,6 +278,23 @@ jobs:
           fi
           echo "llama_cpp correctly absent."
 
+      # Without --infer the demo takes the in-process path. On a --no-local
+      # install it must exit fast and name the endpoint flags, not surface
+      # LangChain's "pip install llama-cpp-python" after loading embeddings.
+      - name: demo without --infer names the endpoint flags
+        run: |
+          set +e
+          out=$(.venv/bin/python src/rag_poisoning_demo.py 2>&1); rc=$?
+          echo "$out"
+          [ "$rc" -eq 2 ] || { echo "::error::expected exit 2 without --infer, got $rc"; exit 1; }
+          echo "$out" | grep -q -- "--infer openai-compat" \
+            || { echo "::error::the message does not name --infer openai-compat"; exit 1; }
+
+      # setup.sh creates .env from the template, so participants start from the
+      # workshop defaults (TOP_K_RETRIEVAL=4, LOG_LEVEL=WARN) without a manual copy.
+      - name: setup.sh created .env from .env.example
+        run: cmp .env .env.example
+
       # With the dependencies actually installed, preflight must now report them
       # present. The bare-runner job only ever asserts the FAIL direction, so a
       # preflight that FAILs forever would otherwise ship green.
