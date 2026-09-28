@@ -288,6 +288,8 @@ def redact_url(url: str) -> str:
     try:
         parts = urllib.parse.urlsplit(url)
         netloc = parts.hostname or ""
+        if ":" in netloc:
+            netloc = "[%s]" % netloc    # IPv6: .hostname drops the brackets
         if parts.port:
             netloc += ":%d" % parts.port
         username = parts.username
@@ -332,12 +334,31 @@ def resolve_probe_model(env: Dict[str, str], body, fallback: str = "local-model"
     return (served[0] if served else fallback), served
 
 
-def check_base_url_shape(env: Dict[str, str]) -> Optional[Result]:
+# The base-URL variable each explicit --provider reads, and the default that
+# config.py falls back to. An unfiltered survey reads both.
+BASE_URL_VARS = {"llama-server": "OPENAI_COMPAT_BASE_URL",
+                 "openai-compat": "OPENAI_COMPAT_BASE_URL",
+                 "lmstudio": "OPENAI_COMPAT_BASE_URL",
+                 "ollama": "OLLAMA_BASE_URL"}
+BASE_URL_DEFAULTS = {"OPENAI_COMPAT_BASE_URL": "http://localhost:8080",
+                     "OLLAMA_BASE_URL": "http://localhost:11434"}
+# Titles check_base_url_shape gives its results; one_line_failure matches them.
+SHAPE_TITLES = ("%s is not a bare origin", "%s is unparseable")
+
+
+def check_base_url_shape(env: Dict[str, str],
+                         var: str = "OPENAI_COMPAT_BASE_URL") -> Optional[Result]:
     """
-    config.py appends /v1 itself, so a base URL that already carries a path
-    becomes /v1/v1 and 404s. This is a documented participant trip-hazard.
+    llm_factory appends /v1 to both base URLs itself (config.py only trims a
+    trailing slash), so a base URL that already carries a path becomes /v1/v1
+    and 404s. This is a documented participant trip-hazard.
+
+    OLLAMA_BASE_URL needs its own wording: preflight probes <base>/api/tags,
+    not /v1/models, and check_ollama counts any HTTP answer as "daemon up" --
+    so a path there surfaces as "OLLAMA_MODEL not pulled" and a pull that
+    changes nothing.
     """
-    raw = (env.get("OPENAI_COMPAT_BASE_URL") or "").strip()
+    raw = (env.get(var) or "").strip()
     if not raw:
         return None
     try:
@@ -346,19 +367,48 @@ def check_base_url_shape(env: Dict[str, str]) -> Optional[Result]:
         path = parts.path.rstrip("/")
     except ValueError:
         return Result(
-            WARN, "OPENAI_COMPAT_BASE_URL is unparseable",
+            WARN, SHAPE_TITLES[1] % var,
             "%r is not a usable URL, so the endpoint can never be reached."
             % redact_url(raw),
-            ["OPENAI_COMPAT_BASE_URL=http://localhost:8080"])
-    if path:
+            ["%s=%s" % (var, BASE_URL_DEFAULTS[var])])
+    if "://" not in raw or not parts.hostname:
+        # No scheme (localhost:11434, the form Ollama's own OLLAMA_HOST takes)
+        # or no host (http:///v1). urlsplit then reads "localhost" as the
+        # scheme, or the whole value as a path, so the origin fix below would
+        # be "localhost:" or empty. Guess http:// in front of a missing scheme;
+        # anything else gets the default.
+        fix, shown = BASE_URL_DEFAULTS[var], redact_url(raw)
+        if "://" not in raw:
+            # redact_url finds userinfo only after "//", so show the guess.
+            shown = "(unparseable URL)"
+            try:
+                guess = urllib.parse.urlsplit("http://" + raw)
+                guess.port
+                if guess.hostname and guess.hostname not in ("http", "https"):
+                    fix = urllib.parse.urlunsplit(guess[:2] + ("", "", ""))
+                    shown = redact_url("http://" + raw)[len("http://"):]
+            except ValueError:
+                pass
         return Result(
-            WARN, "OPENAI_COMPAT_BASE_URL is not a bare origin",
-            "%r has a path. config.py appends /v1 itself, so this becomes "
-            "%s/v1 and 404s. Use scheme://host:port only."
-            % (redact_url(raw), redact_url(raw)),
-            ["OPENAI_COMPAT_BASE_URL=%s" % redact_url(
-                urllib.parse.urlunsplit(urllib.parse.urlsplit(raw)[:2] + ("", "", "")))])
-    return None
+            WARN, SHAPE_TITLES[1] % var,
+            "%r has no scheme://host, so the endpoint can never be reached. "
+            "Use scheme://host:port." % shown,
+            ["%s=%s" % (var, redact_url(fix))])
+    if not path:
+        return None
+    shown = redact_url(raw)
+    if var == "OLLAMA_BASE_URL":
+        detail = ("%r has a path. The demo appends /v1 itself, so it calls %s/v1, "
+                  "and preflight probes %s/api/tags -- neither path exists on "
+                  "Ollama, so the checks below can report a pulled model as "
+                  "missing. Use scheme://host:port only." % (shown, shown, shown))
+    else:
+        detail = ("%r has a path. config.py appends /v1 itself, so this becomes "
+                  "%s/v1 and 404s. Use scheme://host:port only." % (shown, shown))
+    return Result(
+        WARN, SHAPE_TITLES[0] % var, detail,
+        ["%s=%s" % (var, redact_url(
+            urllib.parse.urlunsplit(parts[:2] + ("", "", ""))))])
 
 
 def install_fix(engine: str) -> List[str]:
@@ -1140,9 +1190,15 @@ def run_checks(provider: Optional[str], deep: bool) -> List[Result]:
 
     if provider in (None, "local", "llamacpp"):
         results.append(check_gguf(env, deep, explicit=provider in ("local", "llamacpp")))
-    shape = check_base_url_shape(env)
-    if shape is not None:
-        results.append(shape)
+    # OLLAMA_BASE_URL only for the runs that probe Ollama; the OPENAI_COMPAT
+    # check has always run for every provider and still does.
+    shape_vars = ["OPENAI_COMPAT_BASE_URL"]
+    if provider in (None, "ollama"):
+        shape_vars.append("OLLAMA_BASE_URL")
+    for var in shape_vars:
+        shape = check_base_url_shape(env, var)
+        if shape is not None:
+            results.append(shape)
     if provider in (None, "ollama"):
         results.extend(check_ollama(env, deep, explicit=provider == "ollama"))
     if provider in (None, "llama-server", "openai-compat"):
@@ -1188,19 +1244,67 @@ def report(results: List[Result]) -> int:
     return 0
 
 
-def report_one_line(results: List[Result], env: Dict[str, str]) -> int:
+def one_line_failure(results: List[Result],
+                     provider: Optional[str] = None) -> Optional[Result]:
+    """
+    The one problem --one-line names: normally the first FAIL.
+
+    A base URL with a path makes the endpoint checks fail under names that
+    point elsewhere -- "No runnable inference path" in a survey, a bare
+    "Completion returned HTTP 404" or "OLLAMA_MODEL not pulled" for one
+    provider -- while the shape check that explains them is only a WARN, so it
+    was never the line anyone pasted. When an endpoint check is what failed,
+    name the shape problem instead. Only a variable the run reads counts: a
+    survey reads both, an explicit provider only its own (BASE_URL_VARS).
+
+    Prerequisites keep precedence. They run before any endpoint, a base URL
+    cannot cause them, and each carries its own fix.
+
+    A PASS is only as good as the URL the demo will read. A survey falls back
+    to an engine's conventional port when .env's URL doesn't parse to it, so
+    OPENAI_COMPAT_BASE_URL=localhost:8080 (no scheme) passes against a running
+    llama-server while the demo, which reads .env verbatim, gets "Connection
+    error". So a shape problem on the variable the `run:` hint's --infer reads
+    turns the PASS into this FAIL too.
+    """
+    def prerequisite(res: Result) -> bool:
+        return (res.title.startswith("Python ")
+                or res.title in ("Project dependencies", "llama-cpp-python",
+                                 "Embedding model not cached")
+                or "GGUF" in res.title)
+
+    def shape_result(names) -> Optional[Result]:
+        titles = {fmt % var for var in names for fmt in SHAPE_TITLES}
+        return next((r for r in results if r.title in titles), None)
+
+    first_fail = next((r for r in results if r.status == FAIL), None)
+    if first_fail is None:
+        run = next_step(results) or ""
+        infer = run.split("--infer ", 1)[1] if "--infer " in run else None
+        return shape_result({BASE_URL_VARS[infer]} if infer in BASE_URL_VARS else set())
+    if prerequisite(first_fail):
+        return first_fail
+    if provider is None:
+        names = set(BASE_URL_VARS.values())
+    else:
+        names = {BASE_URL_VARS[provider]} if provider in BASE_URL_VARS else set()
+    return shape_result(names) or first_fail
+
+
+def report_one_line(results: List[Result], env: Dict[str, str],
+                    provider: Optional[str] = None) -> int:
     """
     Emit a single pasteable line for the workshop pre-flight roster.
 
     Participants paste this into the shared thread 24h ahead so the instructor
     can see the real BYO success rate before the room fills.
     """
-    first_fail = next((r for r in results if r.status == FAIL), None)
-    if first_fail is not None:
-        cmds = [c.split("#", 1)[0].strip() for c in first_fail.fix]
+    problem = one_line_failure(results, provider)
+    if problem is not None:
+        cmds = [c.split("#", 1)[0].strip() for c in problem.fix]
         fix = ("; ".join(c for c in cmds if c)
                or "see the full report: python3 src/preflight.py")
-        print("PREFLIGHT FAIL: %s -- %s" % (first_fail.title, fix))
+        print("PREFLIGHT FAIL: %s -- %s" % (problem.title, fix))
         return 1
 
     parts = ["python %d.%d.%d" % sys.version_info[:3]]
@@ -1274,7 +1378,7 @@ def main() -> int:
 
     results = run_checks(args.provider, args.deep)
     if args.one_line:
-        return report_one_line(results, resolve_env())
+        return report_one_line(results, resolve_env(), args.provider)
     if args.json:
         payload = {"results": [r.as_dict() for r in results],
                    "fails": sum(1 for r in results if r.status == FAIL),
