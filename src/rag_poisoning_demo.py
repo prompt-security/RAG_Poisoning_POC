@@ -95,6 +95,7 @@ def main():
               "   doesn't have (./setup.sh --no-local skips it). Pick your endpoint instead:\n"
               "     llama-server / LM Studio:  python3 src/rag_poisoning_demo.py --infer openai-compat\n"
               "     Ollama:                    python3 src/rag_poisoning_demo.py --infer ollama\n"
+              "     DeepSeek (key in .keys):   python3 src/rag_poisoning_demo.py --infer deepseek\n"
               "   Or set up the in-process path: ./setup.sh  (without --no-local; needs cmake and\n"
               "   a C/C++ toolchain, and downloads a ~2.2 GB model)")
         sys.exit(2)
