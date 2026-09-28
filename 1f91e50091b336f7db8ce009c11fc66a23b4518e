@@ -1,0 +1,43 @@
+src/preflight.py
+  14e2b787bfdb772d 578,581-586,1190
+  b747fe5e3de44c66 291-292,337-348,350-357,359,368,371-409,1191-1197,1245-1246,1248-1280,1287-1289,1292,1366
+  2f9046f9beeb0283 467-470,482-484,486,488-498,502,509,516
+  7c52ad63e6d3cb2a 636-637
+test_preflight.py
+  14e2b787bfdb772d 141-143,146-151,187-188
+  b747fe5e3de44c66 60-80,346-554,579-580,588-600,602-619,655-658
+  7c52ad63e6d3cb2a 324-334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "1f91e50091b336f7db8ce009c11fc66a23b4518e",
+  "prompts": {
+    "7c52ad63e6d3cb2a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8b3a61d1-c5c7-484e-99e8-df5693967a19",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 14,
+      "total_deletions": 1,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    },
+    "b747fe5e3de44c66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae513ac1-3794-41cb-a1e1-4d2c39a78987",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 92,
+      "total_deletions": 4,
+      "accepted_lines": 377,
+      "overriden_lines": 0
+    }
+  }
+}
