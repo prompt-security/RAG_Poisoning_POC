@@ -507,6 +507,22 @@ class TestOneLineNamesTheBaseUrlShape(unittest.TestCase):
         self.assertTrue(line.startswith("PREFLIGHT PASS: "), line)
         self.assertNotIn("BASE_URL", line)
 
+    def test_a_pass_through_a_fallback_port_names_the_url_the_demo_reads(self):
+        # The survey falls back to :8080 when .env's URL doesn't parse to that
+        # port, so localhost:8080 (no scheme) passed against a running
+        # llama-server -- and the demo, reading .env verbatim, got "Connection
+        # error". The run: hint's --infer reads OPENAI_COMPAT_BASE_URL here.
+        env = {"OPENAI_COMPAT_BASE_URL": "localhost:8080"}
+        results = [preflight.Result(OK, "Python 3.11.9"),
+                   preflight.check_base_url_shape(env),
+                   preflight.Result(OK, "llama-server responding", "http://localhost:8080"),
+                   preflight.Result(OK, "Completion round-trip",
+                                    "0.1s, model='local-model', said 'READY'",
+                                    provider="openai-compat")]
+        self.assertEqual(one_line(results),
+                         (1, "PREFLIGHT FAIL: OPENAI_COMPAT_BASE_URL is unparseable -- "
+                             "OPENAI_COMPAT_BASE_URL=http://localhost:8080"))
+
     def test_a_url_without_a_scheme_or_host_gets_a_pasteable_fix(self):
         # OLLAMA_HOST takes host:port, so OLLAMA_BASE_URL=localhost:11434 is a
         # likely slip. urlsplit reads "localhost" as the scheme, or the whole

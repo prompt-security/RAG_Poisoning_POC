@@ -342,6 +342,8 @@ BASE_URL_VARS = {"llama-server": "OPENAI_COMPAT_BASE_URL",
                  "ollama": "OLLAMA_BASE_URL"}
 BASE_URL_DEFAULTS = {"OPENAI_COMPAT_BASE_URL": "http://localhost:8080",
                      "OLLAMA_BASE_URL": "http://localhost:11434"}
+# Titles check_base_url_shape gives its results; one_line_failure matches them.
+SHAPE_TITLES = ("%s is not a bare origin", "%s is unparseable")
 
 
 def check_base_url_shape(env: Dict[str, str],
@@ -365,7 +367,7 @@ def check_base_url_shape(env: Dict[str, str],
         path = parts.path.rstrip("/")
     except ValueError:
         return Result(
-            WARN, "%s is unparseable" % var,
+            WARN, SHAPE_TITLES[1] % var,
             "%r is not a usable URL, so the endpoint can never be reached."
             % redact_url(raw),
             ["%s=%s" % (var, BASE_URL_DEFAULTS[var])])
@@ -388,7 +390,7 @@ def check_base_url_shape(env: Dict[str, str],
             except ValueError:
                 pass
         return Result(
-            WARN, "%s is unparseable" % var,
+            WARN, SHAPE_TITLES[1] % var,
             "%r has no scheme://host, so the endpoint can never be reached. "
             "Use scheme://host:port." % shown,
             ["%s=%s" % (var, redact_url(fix))])
@@ -404,7 +406,7 @@ def check_base_url_shape(env: Dict[str, str],
         detail = ("%r has a path. config.py appends /v1 itself, so this becomes "
                   "%s/v1 and 404s. Use scheme://host:port only." % (shown, shown))
     return Result(
-        WARN, "%s is not a bare origin" % var, detail,
+        WARN, SHAPE_TITLES[0] % var, detail,
         ["%s=%s" % (var, redact_url(
             urllib.parse.urlunsplit(parts[:2] + ("", "", ""))))])
 
@@ -1257,6 +1259,13 @@ def one_line_failure(results: List[Result],
 
     Prerequisites keep precedence. They run before any endpoint, a base URL
     cannot cause them, and each carries its own fix.
+
+    A PASS is only as good as the URL the demo will read. A survey falls back
+    to an engine's conventional port when .env's URL doesn't parse to it, so
+    OPENAI_COMPAT_BASE_URL=localhost:8080 (no scheme) passes against a running
+    llama-server while the demo, which reads .env verbatim, gets "Connection
+    error". So a shape problem on the variable the `run:` hint's --infer reads
+    turns the PASS into this FAIL too.
     """
     def prerequisite(res: Result) -> bool:
         return (res.title.startswith("Python ")
@@ -1264,16 +1273,22 @@ def one_line_failure(results: List[Result],
                                  "Embedding model not cached")
                 or "GGUF" in res.title)
 
+    def shape_result(names) -> Optional[Result]:
+        titles = {fmt % var for var in names for fmt in SHAPE_TITLES}
+        return next((r for r in results if r.title in titles), None)
+
     first_fail = next((r for r in results if r.status == FAIL), None)
-    if first_fail is None or prerequisite(first_fail):
+    if first_fail is None:
+        run = next_step(results) or ""
+        infer = run.split("--infer ", 1)[1] if "--infer " in run else None
+        return shape_result({BASE_URL_VARS[infer]} if infer in BASE_URL_VARS else set())
+    if prerequisite(first_fail):
         return first_fail
     if provider is None:
         names = set(BASE_URL_VARS.values())
     else:
         names = {BASE_URL_VARS[provider]} if provider in BASE_URL_VARS else set()
-    titles = {fmt % var for var in names
-              for fmt in ("%s is not a bare origin", "%s is unparseable")}
-    return next((r for r in results if r.title in titles), first_fail)
+    return shape_result(names) or first_fail
 
 
 def report_one_line(results: List[Result], env: Dict[str, str],
