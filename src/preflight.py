@@ -585,7 +585,8 @@ def check_gguf(env: Dict[str, str], deep: bool = False, explicit: bool = False) 
 def check_ollama(env: Dict[str, str], deep: bool,
                  explicit: bool = False) -> List[Result]:
     results: List[Result] = []
-    base = env.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    # Trimmed exactly as config.py trims it, so this probes the URL the demo uses.
+    base = env.get("OLLAMA_BASE_URL", "http://localhost:11434").strip().rstrip("/")
     # Mirror config.py's default, or preflight would pass while the demo pulls a
     # model nobody checked.
     configured = (env.get("OLLAMA_MODEL") or "").strip()

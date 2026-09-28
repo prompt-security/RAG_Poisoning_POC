@@ -300,6 +300,17 @@ class TestEndpointUrlHandling(unittest.TestCase):
                 preflight.check_lmstudio(env, False, explicit=True)   # must not raise
                 preflight.check_llama_server(env, False, explicit=True)
 
+    def test_padded_ollama_url_is_trimmed_like_config_py(self):
+        # config.py trims whitespace and a trailing slash; check_ollama only
+        # trimmed the slash, so a quoted or exported "http://host:11434/ "
+        # raised InvalidURL out of preflight while the demo ran fine.
+        base = "http://127.0.0.1:%d" % dead_port()
+        for url in (base + " ", " " + base, base + "/ "):
+            with self.subTest(url=url):
+                results = preflight.check_ollama({"OLLAMA_BASE_URL": url},
+                                                 False, explicit=True)
+                self.assertTrue(any(base in r.detail for r in results), results)
+
     def test_a_path_bearing_base_url_is_flagged(self):
         # config.py appends /v1 itself, so a path here becomes /v1/v1 and 404s.
         res = preflight.check_base_url_shape(
