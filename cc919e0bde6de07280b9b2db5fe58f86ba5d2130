@@ -1,0 +1,27 @@
+src/preflight.py
+  b747fe5e3de44c66 335-346,348-355,357,366,369-384,1166-1172,1220-1221,1223-1255,1262-1264,1267,1341
+test_preflight.py
+  b747fe5e3de44c66 60-80,346-509,534-535,543-555,592-595
+test_preflight_endpoints.py
+  b747fe5e3de44c66 24-25,29,49-57,66-67,105-107,403-487
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "2.0.0",
+  "base_commit_sha": "cc919e0bde6de07280b9b2db5fe58f86ba5d2130",
+  "prompts": {
+    "b747fe5e3de44c66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae513ac1-3794-41cb-a1e1-4d2c39a78987",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Abutbul <David.a@prompt.security>",
+      "messages": [],
+      "total_additions": 401,
+      "total_deletions": 31,
+      "accepted_lines": 393,
+      "overriden_lines": 0
+    }
+  }
+}
