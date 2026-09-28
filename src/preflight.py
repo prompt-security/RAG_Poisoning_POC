@@ -288,6 +288,8 @@ def redact_url(url: str) -> str:
     try:
         parts = urllib.parse.urlsplit(url)
         netloc = parts.hostname or ""
+        if ":" in netloc:
+            netloc = "[%s]" % netloc    # IPv6: .hostname drops the brackets
         if parts.port:
             netloc += ":%d" % parts.port
         username = parts.username
@@ -367,6 +369,29 @@ def check_base_url_shape(env: Dict[str, str],
             "%r is not a usable URL, so the endpoint can never be reached."
             % redact_url(raw),
             ["%s=%s" % (var, BASE_URL_DEFAULTS[var])])
+    if "://" not in raw or not parts.hostname:
+        # No scheme (localhost:11434, the form Ollama's own OLLAMA_HOST takes)
+        # or no host (http:///v1). urlsplit then reads "localhost" as the
+        # scheme, or the whole value as a path, so the origin fix below would
+        # be "localhost:" or empty. Guess http:// in front of a missing scheme;
+        # anything else gets the default.
+        fix, shown = BASE_URL_DEFAULTS[var], redact_url(raw)
+        if "://" not in raw:
+            # redact_url finds userinfo only after "//", so show the guess.
+            shown = "(unparseable URL)"
+            try:
+                guess = urllib.parse.urlsplit("http://" + raw)
+                guess.port
+                if guess.hostname and guess.hostname not in ("http", "https"):
+                    fix = urllib.parse.urlunsplit(guess[:2] + ("", "", ""))
+                    shown = redact_url("http://" + raw)[len("http://"):]
+            except ValueError:
+                pass
+        return Result(
+            WARN, "%s is unparseable" % var,
+            "%r has no scheme://host, so the endpoint can never be reached. "
+            "Use scheme://host:port." % shown,
+            ["%s=%s" % (var, redact_url(fix))])
     if not path:
         return None
     shown = redact_url(raw)

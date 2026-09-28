@@ -507,6 +507,51 @@ class TestOneLineNamesTheBaseUrlShape(unittest.TestCase):
         self.assertTrue(line.startswith("PREFLIGHT PASS: "), line)
         self.assertNotIn("BASE_URL", line)
 
+    def test_a_url_without_a_scheme_or_host_gets_a_pasteable_fix(self):
+        # OLLAMA_HOST takes host:port, so OLLAMA_BASE_URL=localhost:11434 is a
+        # likely slip. urlsplit reads "localhost" as the scheme, or the whole
+        # value as a path, so the origin fix came out as "localhost:" or
+        # "(empty URL)" -- in the very line participants paste and act on.
+        cases = [("OLLAMA_BASE_URL", "localhost:11434", "http://localhost:11434"),
+                 ("OLLAMA_BASE_URL", "127.0.0.1:11434", "http://127.0.0.1:11434"),
+                 ("OPENAI_COMPAT_BASE_URL", "127.0.0.1:8080", "http://127.0.0.1:8080"),
+                 ("OPENAI_COMPAT_BASE_URL", "localhost:8080/v1", "http://localhost:8080"),
+                 ("OPENAI_COMPAT_BASE_URL", "[::1]:8080", "http://[::1]:8080"),
+                 # No host, or nothing to guess from: the default.
+                 ("OPENAI_COMPAT_BASE_URL", "http:///v1", "http://localhost:8080"),
+                 ("OLLAMA_BASE_URL", "http://:11434/v1", "http://localhost:11434"),
+                 ("OLLAMA_BASE_URL", "http:/localhost:11434", "http://localhost:11434"),
+                 ("OLLAMA_BASE_URL", "h:bad", "http://localhost:11434")]
+        for var, raw, origin in cases:
+            with self.subTest(raw=raw):
+                env = {var: raw}
+                res = preflight.check_base_url_shape(env, var)
+                self.assertEqual(res.status, WARN)
+                self.assertEqual(res.fix, ["%s=%s" % (var, origin)])
+                results = [res, preflight.check_viable_path([], env)]
+                self.assertEqual(one_line(results), (1, "PREFLIGHT FAIL: %s is "
+                                 "unparseable -- %s=%s" % (var, var, origin)))
+
+    def test_explicit_provider_names_a_url_without_a_scheme(self):
+        target = "127.0.0.1:%d" % dead_port()
+        for provider, check in (("llama-server", preflight.check_llama_server),
+                                ("lmstudio", preflight.check_lmstudio),
+                                ("ollama", preflight.check_ollama)):
+            with self.subTest(provider=provider):
+                var = preflight.BASE_URL_VARS[provider]
+                env = {var: target}
+                results = [preflight.check_base_url_shape(env, var)]
+                results += check(env, False, explicit=True)
+                self.assertTrue(has_fail(results))
+                self.assertEqual(one_line(results, provider),
+                                 (1, "PREFLIGHT FAIL: %s is unparseable -- %s=http://%s"
+                                  % (var, var, target)))
+
+    def test_an_ipv6_origin_keeps_its_brackets(self):
+        res = preflight.check_base_url_shape(
+            {"OPENAI_COMPAT_BASE_URL": "http://[::1]:8080/v1"})
+        self.assertEqual(res.fix, ["OPENAI_COMPAT_BASE_URL=http://[::1]:8080"])
+
 
 class TestCredentialsAreNotPrinted(unittest.TestCase):
     """
@@ -553,6 +598,24 @@ class TestCredentialsAreNotPrinted(unittest.TestCase):
                 self.assertIn("%s is not a bare origin" % var, line)
                 for leak in (self.SECRET, "alsosecret", "frag"):
                     self.assertNotIn(leak, line)
+
+    def test_a_url_without_a_scheme_is_redacted(self):
+        # With no "//", urlsplit does not see "user:token@" as userinfo, so
+        # redact_url alone would print it.
+        raw = "user:%s@127.0.0.1:9/v1?api_key=alsosecret#frag" % self.SECRET
+        for var in ("OPENAI_COMPAT_BASE_URL", "OLLAMA_BASE_URL"):
+            with self.subTest(var=var):
+                env = {var: raw}
+                res = preflight.check_base_url_shape(env, var)
+                self.assertEqual(res.fix, ["%s=http://***@127.0.0.1:9" % var])
+                _rc, line = one_line([res, preflight.check_viable_path([], env)])
+                blob = json.dumps(res.as_dict()) + line
+                for leak in (self.SECRET, "alsosecret", "frag"):
+                    self.assertNotIn(leak, blob)
+
+    def test_redact_url_keeps_ipv6_brackets(self):
+        self.assertEqual(preflight.redact_url("http://u:p@[::1]:8080/v1?k=s"),
+                         "http://***@[::1]:8080/v1 (query redacted)")
 
 
 class TestProbedModelMatchesTheDemo(unittest.TestCase):
