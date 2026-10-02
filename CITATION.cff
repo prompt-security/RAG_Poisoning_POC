@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use The Hidden Parrot: RAG Poisoning POC in research or security tooling, please cite it as below."
+title: "The Hidden Parrot: RAG Poisoning POC"
+version: "0.1.0"
+date-released: "2025-11-11"
+abstract: >-
+  The Hidden Parrot is a reproducible teaching proof of concept demonstrating
+  RAG poisoning through indirect prompt injection in a retrieval corpus.
+  It compares responses from a clean knowledge base with responses after
+  adding a single poisoned document, using LangChain, ChromaDB, and
+  sentence-transformer embeddings to show how retrieved instructions can
+  influence a language model's behavior.
+type: software
+license: "AGPL-3.0-only"
+url: "https://github.com/prompt-security/RAG_Poisoning_POC"
+repository-code: "https://github.com/prompt-security/RAG_Poisoning_POC"
+keywords:
+  - ai-security
+  - rag-security
+  - prompt-injection
+  - rag-poisoning
+  - retrieval-augmented-generation
+  - vector-databases
+authors:
+  - given-names: David
+    family-names: Abutbul
+    affiliation: "Prompt Security"
+    orcid: "https://orcid.org/0009-0001-7883-3593"
