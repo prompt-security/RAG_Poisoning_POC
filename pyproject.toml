@@ -12,12 +12,12 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.13"
 dependencies = [
     # Core RAG Framework
-    "langchain==1.3.9",
+    "langchain==1.4.7",
     # langchain-community must track langchain's major line: 0.0.13 only works
     # against langchain-core<0.2, which langchain 1.3.9 (langchain-core>=1.4.6)
     # cannot satisfy -- installs fail to resolve at all otherwise.
     "langchain-community==0.4.2",
-    "langchain-openai==1.1.14",
+    "langchain-openai==1.7.3",
 
     # Vector Database
     "chromadb==0.4.24",
@@ -32,7 +32,7 @@ dependencies = [
     # those lands in transformers 5.x, so sentence-transformers must move to a
     # 5.x-compatible release. 6.1.0 keeps the SentenceTransformer(...).encode()
     # API the demo uses and still resolves under the numpy<2 pin below.
-    "sentence-transformers==6.1.0",
+    "sentence-transformers==6.2.0",
     "torch>=2.0.0",
     # Security floor: 5.10.0 is the first release patched against all four
     # transformers advisories above (the highest is CVE-2026-9856, fixed 5.10.0).
@@ -40,7 +40,7 @@ dependencies = [
     "huggingface-hub>=0.20.0",
 
     # Configuration
-    "python-dotenv==1.2.2",
+    "python-dotenv==1.2.4",
 
     # Web scraping for llms.txt downloader
     "httpx>=0.26.0",
